@@ -6,10 +6,10 @@ import asyncio
 from collections.abc import Callable
 from typing import Any
 
-from forward_messages_auto.config import ForwardMessagesAutoConfig
-from forward_messages_auto.models import ForwardJob, TargetStage
-from forward_messages_auto.state import ForwardStateStore
-from forward_messages_auto.streams import GroupStreamRegistry
+from .config import ForwardMessagesAutoConfig
+from .models import ForwardJob, TargetStage
+from .state import ForwardStateStore
+from .streams import GroupStreamRegistry
 
 
 class CapabilityResult:

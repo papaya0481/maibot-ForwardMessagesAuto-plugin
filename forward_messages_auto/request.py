@@ -6,12 +6,12 @@ from collections.abc import Callable
 import hashlib
 from typing import Any
 
-from forward_messages_auto.cache import ViewResultCache
-from forward_messages_auto.config import ForwardMessagesAutoConfig, GroupIdList
-from forward_messages_auto.delivery import ForwardDeliveryService
-from forward_messages_auto.models import ForwardJob, TargetStage
-from forward_messages_auto.parsing import ForwardMessageParser
-from forward_messages_auto.state import ForwardStateStore
+from .cache import ViewResultCache
+from .config import ForwardMessagesAutoConfig, GroupIdList
+from .delivery import ForwardDeliveryService
+from .models import ForwardJob, TargetStage
+from .parsing import ForwardMessageParser
+from .state import ForwardStateStore
 
 
 class ForwardRequestService:

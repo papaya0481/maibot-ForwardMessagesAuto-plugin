@@ -7,8 +7,8 @@ from typing import Any
 
 from maibot_sdk import Field, PluginConfigBase
 
-PLUGIN_VERSION = "0.1.1"
-CONFIG_VERSION = PLUGIN_VERSION
+PLUGIN_VERSION = "0.1.2"
+CONFIG_VERSION = "0.1.1"
 
 
 class GroupIdList:

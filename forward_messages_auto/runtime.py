@@ -5,13 +5,13 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from forward_messages_auto.cache import ViewResultCache
-from forward_messages_auto.config import ForwardMessagesAutoConfig, GroupIdList
-from forward_messages_auto.delivery import ForwardDeliveryService
-from forward_messages_auto.parsing import PlannerHistoryParser, ToolDefinition
-from forward_messages_auto.request import ForwardRequestService
-from forward_messages_auto.state import ForwardStateStore
-from forward_messages_auto.streams import GroupStreamRegistry
+from .cache import ViewResultCache
+from .config import ForwardMessagesAutoConfig, GroupIdList
+from .delivery import ForwardDeliveryService
+from .parsing import PlannerHistoryParser, ToolDefinition
+from .request import ForwardRequestService
+from .state import ForwardStateStore
+from .streams import GroupStreamRegistry
 
 FORWARD_TOOL_NAME = "request_cross_group_forward"
 

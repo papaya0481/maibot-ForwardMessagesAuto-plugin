@@ -6,9 +6,15 @@
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-07-23
+
 ### Changed
 
 - 统一采用“自主跨群转发”的插件名称和用户可见表述，强调麦麦理解内容并主动作出分享决定的主体性。
+
+### Fixed
+
+- 修复 MaiBot Runner 以合成包加载 `plugin.py` 时无法导入内部 `forward_messages_auto` 子包、导致插件启动失败的问题。
 
 ## [0.1.1] - 2026-07-23
 
@@ -35,6 +41,7 @@
 - 新增分阶段持久化状态与幂等恢复，避免后续步骤失败时重复发送。
 - 新增测试，覆盖缓存、白名单、消息节点、顺序投递、失败隔离和去重。
 
-[Unreleased]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/releases/tag/v0.1.0

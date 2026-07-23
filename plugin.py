@@ -7,13 +7,22 @@ from typing import Any
 from maibot_sdk import HookHandler, MaiBotPlugin, Tool
 from maibot_sdk.types import ErrorPolicy, HookMode, HookOrder, ToolParameterInfo, ToolParamType
 
-from forward_messages_auto import (
-    CONFIG_VERSION,
-    PLUGIN_VERSION,
-    ForwardMessagesAutoConfig,
-    ForwardingRuntime,
-)
-from forward_messages_auto.runtime import FORWARD_TOOL_NAME
+if __package__:
+    from .forward_messages_auto import (
+        CONFIG_VERSION,
+        PLUGIN_VERSION,
+        ForwardMessagesAutoConfig,
+        ForwardingRuntime,
+    )
+    from .forward_messages_auto.runtime import FORWARD_TOOL_NAME
+else:
+    from forward_messages_auto import (
+        CONFIG_VERSION,
+        PLUGIN_VERSION,
+        ForwardMessagesAutoConfig,
+        ForwardingRuntime,
+    )
+    from forward_messages_auto.runtime import FORWARD_TOOL_NAME
 
 
 class ForwardMessagesAutoPlugin(MaiBotPlugin):

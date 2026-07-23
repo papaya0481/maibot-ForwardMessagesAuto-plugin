@@ -8,7 +8,7 @@ from pathlib import Path
 import time
 from typing import Any
 
-from forward_messages_auto.models import ForwardJob, TargetStage
+from .models import ForwardJob, TargetStage
 
 
 class ForwardStateStore:

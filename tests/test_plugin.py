@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -12,6 +14,52 @@ from forward_messages_auto.config import GroupIdList
 from forward_messages_auto.parsing import ForwardMessageParser, PlannerHistoryParser
 from forward_messages_auto.runtime import FORWARD_TOOL_NAME
 from plugin import ForwardMessagesAutoPlugin
+
+
+def test_plugin_loads_with_runner_package_layout() -> None:
+    """验证入口能按 MaiBot Runner 的合成包布局完成隔离加载。
+
+    子进程仅把 ``plugins/`` 父目录加入导入路径，并使用
+    ``submodule_search_locations`` 将 ``plugin.py`` 注册为合成包。期望入口
+    及内部业务子包均能导入且工厂返回插件实例；该测试防止重新使用
+    ``from forward_messages_auto`` 顶层导入而导致 Host 启动失败。
+    """
+
+    plugin_dir = Path(__file__).resolve().parents[1]
+    script = """
+import importlib.util
+import pathlib
+import sys
+
+plugin_dir = pathlib.Path(sys.argv[1]).resolve()
+sys.path = [
+    str(plugin_dir.parent),
+    *[
+        entry
+        for entry in sys.path
+        if entry and pathlib.Path(entry).resolve() != plugin_dir
+    ],
+]
+module_name = "_maibot_plugin_papaya0481_forward_messages_auto"
+spec = importlib.util.spec_from_file_location(
+    module_name,
+    plugin_dir / "plugin.py",
+    submodule_search_locations=[str(plugin_dir)],
+)
+assert spec is not None and spec.loader is not None
+module = importlib.util.module_from_spec(spec)
+sys.modules[module_name] = module
+spec.loader.exec_module(module)
+assert module.create_plugin().__class__.__name__ == "ForwardMessagesAutoPlugin"
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script, str(plugin_dir)],
+        cwd=plugin_dir.parent,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def build_forward_message(*, stream_id: str = "source-stream", group_id: str = "10001") -> dict[str, Any]:
@@ -340,7 +388,7 @@ def build_plugin(
         {
             "plugin": {
                 "enabled": True,
-                "version": "0.1.1",
+                "version": "0.1.2",
                 "config_version": "0.1.1",
             },
             "routing": {

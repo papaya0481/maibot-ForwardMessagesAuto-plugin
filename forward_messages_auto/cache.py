@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 
-from forward_messages_auto.models import ViewCacheEntry
+from .models import ViewCacheEntry
 
 
 class ViewResultCache:

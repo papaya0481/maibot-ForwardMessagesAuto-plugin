@@ -1,11 +1,11 @@
 """麦麦自主跨群转发插件的内部实现。"""
 
-from forward_messages_auto.config import (
+from .config import (
     CONFIG_VERSION,
     PLUGIN_VERSION,
     ForwardMessagesAutoConfig,
 )
-from forward_messages_auto.runtime import ForwardingRuntime
+from .runtime import ForwardingRuntime
 
 __all__ = [
     "CONFIG_VERSION",
