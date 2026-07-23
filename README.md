@@ -15,11 +15,6 @@
 ## 当前配置
 
 ```toml
-[plugin]
-enabled = true
-version = "0.1.1"
-config_version = "0.1.1"
-
 [routing]
 source_groups = ["123456789"]
 target_groups = ["234567890", "345678901"]
@@ -29,7 +24,6 @@ view_cache_ttl_seconds = 1800
 dedupe_ttl_seconds = 604800
 trigger_target_planner = true
 ```
-
 source 和 target 均只填写 QQ 群号字符串。`target_groups` 的列表顺序就是每次任务的发送顺序。未列入白名单的群不能触发或接收自动转发。
 
 ## 工作流程
