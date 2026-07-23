@@ -1,4 +1,4 @@
-"""麦麦自动跨群转发插件的内部实现。"""
+"""麦麦自主跨群转发插件的内部实现。"""
 
 from forward_messages_auto.config import (
     CONFIG_VERSION,

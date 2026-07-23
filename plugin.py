@@ -1,4 +1,4 @@
-"""麦麦自动跨群转发插件入口。"""
+"""麦麦自主跨群转发插件入口。"""
 
 from __future__ import annotations
 
@@ -53,7 +53,7 @@ class ForwardMessagesAutoPlugin(MaiBotPlugin):
         await self.runtime.start()
         self._warn_for_version_mismatch()
         self.ctx.logger.info(
-            "麦麦自动跨群转发插件 v%s 已加载，enabled=%s source=%d target=%d",
+            "麦麦自主跨群转发插件 v%s 已加载，enabled=%s source=%d target=%d",
             PLUGIN_VERSION,
             self.config.plugin.enabled,
             len(self.runtime.source_groups()),
@@ -65,7 +65,7 @@ class ForwardMessagesAutoPlugin(MaiBotPlugin):
 
         if self._runtime is not None:
             await self._runtime.stop()
-        self.ctx.logger.info("麦麦自动跨群转发插件已卸载")
+        self.ctx.logger.info("麦麦自主跨群转发插件已卸载")
 
     async def on_config_update(
         self,
@@ -79,7 +79,7 @@ class ForwardMessagesAutoPlugin(MaiBotPlugin):
         if self._runtime is not None:
             await self._runtime.reconfigure()
         self._warn_for_version_mismatch()
-        self.ctx.logger.info("自动跨群转发配置已更新: scope=%s version=%s", scope, version)
+        self.ctx.logger.info("自主跨群转发配置已更新: scope=%s version=%s", scope, version)
 
     def _warn_for_version_mismatch(self) -> None:
         """记录用户配置中不一致的只读版本字段。"""

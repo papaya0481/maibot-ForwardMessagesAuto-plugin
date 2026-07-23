@@ -111,7 +111,7 @@ class ForwardRequestService:
         invocation_context: dict[str, Any],
     ) -> tuple[str, str, str, list[str]] | dict[str, Any]:
         if not self.config.plugin.enabled:
-            return self.failure("自动跨群转发插件当前未启用。")
+            return self.failure("自主跨群转发插件当前未启用。")
 
         platform = str(invocation_context.get("platform") or "").strip().lower()
         source_group_id = str(invocation_context.get("group_id") or "").strip()

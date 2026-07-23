@@ -1,4 +1,4 @@
-# 自动跨群转发功能设计
+# 自主跨群转发功能设计
 
 ## 1. 文档状态
 
@@ -42,7 +42,7 @@ Target 是接收合并转发消息的目标群聊。只有列入 target 白名�
 - source 白名单：允许作为消息来源并触发插件工具的 QQ 群号；
 - target 白名单：允许接收插件转发消息的 QQ 群号。
 
-不提供黑名单，也不采用“除黑名单外全部允许”的隐式规则。新增群聊不会自动获得 source 或 target 权限。
+不提供黑名单，也不采用“除黑名单外全部允许”的隐式规则。新增群聊不会直接获得 source 或 target 权限。
 
 初版固定使用 SnowLuma Adapter 和 QQ 平台，因此配置中只保存群号，不增加 `platform`、`account_id` 或其他复合路由字段。插件运行时负责根据群号解析对应聊天流。
 
@@ -109,7 +109,7 @@ Target 是接收合并转发消息的目标群聊。只有列入 target 白名�
 
 ### 5.2 完整内容缓存
 
-Planner 的前一个工具结果不会自动成为后续插件 Tool 的参数。为复用 `view_forward_message` 的完整结果，推荐使用阻塞式 `maisaka.planner.before_request` Hook：
+Planner 的前一个工具结果不会直接成为后续插件 Tool 的参数。为复用 `view_forward_message` 的完整结果，推荐使用阻塞式 `maisaka.planner.before_request` Hook：
 
 1. 仅检查 source 白名单聊天流的 Planner 请求；
 2. 从 Planner 历史中识别 `view_forward_message` 的 tool call；
@@ -131,7 +131,7 @@ Planner 的前一个工具结果不会自动成为后续插件 Tool 的参数。
 
 ### 5.3 目标群上下文
 
-不能只依赖发送能力自动同步 Maisaka 历史，因为目标群运行时可能尚未创建。每个 target 发送成功后，插件应显式调用：
+不能只依赖发送能力隐式同步 Maisaka 历史，因为目标群运行时可能尚未创建。每个 target 发送成功后，插件应显式调用：
 
 ```text
 ctx.maisaka.context.append(

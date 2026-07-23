@@ -34,7 +34,7 @@ class PluginSectionConfig(PluginConfigBase):
     __ui_icon__ = "package"
     __ui_order__ = 0
 
-    enabled: bool = Field(default=False, description="是否启用自动跨群转发")
+    enabled: bool = Field(default=False, description="是否启用自主跨群转发")
     version: str = Field(default=PLUGIN_VERSION, description="插件版本")
     config_version: str = Field(default=CONFIG_VERSION, description="配置版本")
 
@@ -48,11 +48,11 @@ class RoutingConfig(PluginConfigBase):
 
     source_groups: list[str] = Field(
         default_factory=list,
-        description="允许触发自动转发的 QQ 群号列表",
+        description="允许触发自主转发的 QQ 群号列表",
     )
     target_groups: list[str] = Field(
         default_factory=list,
-        description="允许接收自动转发的 QQ 群号列表，列表顺序即处理顺序",
+        description="允许接收自主转发的 QQ 群号列表，列表顺序即处理顺序",
     )
 
 
