@@ -17,7 +17,7 @@
   },
   "changelog": "CHANGELOG.md",
   "host_application": {
-    "min_version": "1.0.11",
+    "min_version": "1.1.0",
     "max_version": "1.99.99"
   },
   "sdk": {
