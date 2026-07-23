@@ -2,17 +2,17 @@
 
 让 MaiBot 在 source 白名单群聊中看完一则合并转发消息后，自主判断是否值得分享。插件按照 target 白名单顺序发送消息，并在每个目标群中触发 Planner，自主决定是否补充一句看法。
 
-当前版本为 `0.1.1`，仅面向 SnowLuma Adapter 下的 QQ 群聊开发验证。
+当前版本为 `0.1.1`，基于 MaiBot `1.1.0` 开发，仅面向 SnowLuma Adapter 下的 QQ 群聊进行验证。
 
 ## 安装要求
 
-- MaiBot `1.0.11` 或更高兼容版本
+- MaiBot `1.1.0` 或更高兼容版本
 - maibot-plugin-sdk `2.7.1` 或更高兼容版本
 - SnowLuma Adapter `0.8.4` 或更高的 `0.x` 兼容版本
 
 插件必须位于 MaiBot 的 `plugins/MaiBot_ForwardMessagesAuto_Plugin/` 目录。运行时配置由 MaiBot 根据 `plugin.py` 中的 `config_model` 生成到 `config.toml`，该文件不应提交。
 
-## 初始配置
+## 当前配置
 
 ```toml
 [plugin]
@@ -54,7 +54,7 @@ sent → context_appended → planner_queued
 
 状态保存在 MaiBot 为插件分配的数据目录中。若发送已经成功，但上下文写入或 Planner 入队失败，再次发起同一请求时会从未完成阶段继续，不会重复发送已经成功的合并转发。
 
-单个 target 失败不会阻止后续 target。初版只保证发送和主动任务入队按白名单顺序发生；不同目标群的 Planner 可能在入队后并发推理。
+单个 target 失败不会阻止后续 target。当前版本只保证发送和主动任务入队按白名单顺序发生；不同目标群的 Planner 可能在入队后并发推理。
 
 ## 测试
 
