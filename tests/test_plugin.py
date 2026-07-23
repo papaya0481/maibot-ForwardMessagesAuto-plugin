@@ -390,7 +390,7 @@ def build_plugin(
         {
             "plugin": {
                 "enabled": True,
-                "version": "0.1.3",
+                "version": "0.1.4",
                 "config_version": "0.1.1",
             },
             "routing": {
