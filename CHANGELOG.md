@@ -6,6 +6,13 @@
 
 ## [Unreleased]
 
+## [0.1.7] - 2026-07-24
+
+### Fixed
+
+- 将 source 定义明确为“读取消息并发起分享的当前群聊”，不再要求合并转发消息元数据中的原始群号等于 source 群号。
+- 继续通过 Tool 调用群白名单、查询 `stream_id` 和返回消息 `session_id` 三层校验阻止非 source 群调用及跨聊天流消息读取。
+
 ## [0.1.6] - 2026-07-23
 
 ### Fixed
@@ -68,7 +75,8 @@
 - 新增分阶段持久化状态与幂等恢复，避免后续步骤失败时重复发送。
 - 新增测试，覆盖缓存、白名单、消息节点、顺序投递、失败隔离和去重。
 
-[Unreleased]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.6...HEAD
+[Unreleased]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.7...HEAD
+[0.1.7]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.6...v0.1.7
 [0.1.6]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.3...v0.1.4

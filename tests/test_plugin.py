@@ -430,7 +430,7 @@ def build_plugin(
         {
             "plugin": {
                 "enabled": True,
-                "version": "0.1.6",
+                "version": "0.1.7",
                 "config_version": "0.1.1",
             },
             "routing": {
@@ -760,9 +760,7 @@ async def test_source_message_query_accepts_legacy_wrapped_success(tmp_path: Pat
     """
 
     plugin = build_plugin(tmp_path)
-    plugin.ctx.message = FakeStaticMessageCapability(
-        {"success": True, "message": build_forward_message()}
-    )
+    plugin.ctx.message = FakeStaticMessageCapability({"success": True, "message": build_forward_message()})
     await plugin.on_load()
     result = await plugin.request_cross_group_forward(
         "forward-message",
@@ -790,9 +788,7 @@ async def test_source_message_query_preserves_host_failure_reason(tmp_path: Path
     """
 
     plugin = build_plugin(tmp_path)
-    plugin.ctx.message = FakeStaticMessageCapability(
-        {"success": False, "error": "消息不属于指定聊天流"}
-    )
+    plugin.ctx.message = FakeStaticMessageCapability({"success": False, "error": "消息不属于指定聊天流"})
     await plugin.on_load()
     result = await plugin.request_cross_group_forward(
         "forward-message",
@@ -829,6 +825,69 @@ async def test_source_message_query_reports_missing_host_error(tmp_path: Path) -
     )
     assert result["success"] is False
     assert "Host 未提供失败原因" in result["content"]
+    assert plugin.ctx.events == []
+    await plugin.on_unload()
+
+
+@pytest.mark.asyncio
+async def test_source_group_can_share_forward_received_from_another_group(tmp_path: Path) -> None:
+    """验证 source 群可分享最初来自其他群的合并转发消息。
+
+    消息的 ``session_id`` 属于当前 source 聊天流，但元数据 ``group_id``
+    模拟记录为其他群。Tool 应接受任务并完成投递，因为 source 白名单描述
+    的是读取和发起分享的当前群，而不是合并转发内容的原始来源群。该测试
+    防止重新引入 ``message.group_id == invocation.group_id`` 的错误限制。
+
+    Args:
+        tmp_path: pytest 提供的隔离状态目录。
+    """
+
+    plugin = build_plugin(tmp_path)
+    plugin.ctx.message = FakeMessageCapability(
+        build_forward_message(stream_id="source-stream", group_id="original-group")
+    )
+    await plugin.on_load()
+    result = await plugin.request_cross_group_forward(
+        "forward-message",
+        content_summary="来自其他群的合并转发摘要",
+        platform="qq",
+        group_id="10001",
+        stream_id="source-stream",
+    )
+    assert result["success"] is True
+    assert result["accepted"] is True
+    await wait_for_background_tasks(plugin)
+    assert [event for event in plugin.ctx.events if event[0] == "send"] == [
+        ("send", "target-a"),
+        ("send", "target-b"),
+    ]
+    await plugin.on_unload()
+
+
+@pytest.mark.asyncio
+async def test_source_group_cannot_read_message_from_another_stream(tmp_path: Path) -> None:
+    """验证放宽原始群号后仍拒绝其他聊天流中的消息。
+
+    Tool 调用来自 source 白名单群，但消息 capability 模拟返回
+    ``session_id=other-stream`` 的消息。Tool 应拒绝请求且不发送任何消息，
+    证明授权边界仍由当前 source stream 控制。该测试防止删除群号比较时
+    意外放开通过猜测 ``msg_id`` 进行的跨聊天流读取。
+
+    Args:
+        tmp_path: pytest 提供的隔离状态目录。
+    """
+
+    plugin = build_plugin(tmp_path)
+    plugin.ctx.message = FakeMessageCapability(build_forward_message(stream_id="other-stream", group_id="10001"))
+    await plugin.on_load()
+    result = await plugin.request_cross_group_forward(
+        "forward-message",
+        platform="qq",
+        group_id="10001",
+        stream_id="source-stream",
+    )
+    assert result["success"] is False
+    assert "不属于当前 source 聊天流" in result["content"]
     assert plugin.ctx.events == []
     await plugin.on_unload()
 

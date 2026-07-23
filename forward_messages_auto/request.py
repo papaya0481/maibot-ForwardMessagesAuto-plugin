@@ -93,7 +93,6 @@ class ForwardRequestService:
         message_error = self._validate_source_message(
             message,
             source_stream_id,
-            source_group_id,
         )
         if message_error:
             return self.failure(message_error)
@@ -255,24 +254,25 @@ class ForwardRequestService:
     def _validate_source_message(
         message: dict[str, Any],
         source_stream_id: str,
-        source_group_id: str,
     ) -> str:
-        """确认查询结果属于当前 QQ source 会话。
+        """确认查询结果属于当前 QQ source 聊天流。
+
+        Source 表示读取消息并发起分享的群聊，不表示合并转发节点的原始
+        来源群。消息 capability 已使用当前 ``stream_id`` 限定查询，本方法
+        再校验返回消息的 ``session_id``，但不会比较消息元数据中的
+        ``group_id``，因此允许 source 群分享从其他群收到的合并转发。
 
         Args:
             message: Host 返回的源消息字典。
             source_stream_id: Tool 调用所在的聊天流 ID。
-            source_group_id: Tool 调用所在的 QQ 群号。
 
         Returns:
-            校验通过返回空字符串；聊天流、群号或平台不匹配时返回可直接
-            展示给 Planner 的中文错误说明。
+            校验通过返回空字符串；聊天流或平台不匹配时返回可直接展示给
+            Planner 的中文错误说明。
         """
 
         if str(message.get("session_id") or "").strip() != source_stream_id:
             return "指定消息不属于当前 source 聊天流。"
-        if str(message.get("group_id") or "").strip() != source_group_id:
-            return "指定消息不属于当前 source 群。"
         if str(message.get("platform") or "").strip().lower() != "qq":
             return "指定消息不是 QQ 群聊消息。"
         return ""
