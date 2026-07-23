@@ -137,7 +137,7 @@ class ForwardMessagesAutoPlugin(MaiBotPlugin):
                 name="sharing_reason",
                 param_type=ToolParamType.STRING,
                 description="认为这则内容值得分享的简短原因",
-                required=False,
+                required=True,
                 default="",
             ),
             ToolParameterInfo(

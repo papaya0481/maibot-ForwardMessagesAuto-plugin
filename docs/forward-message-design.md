@@ -2,8 +2,6 @@
 
 ## 1. 文档状态
 
-- 插件初始版本：`0.1.0`
-- 配置初始版本：`0.1.0`
 - 当前插件与配置版本：`0.1.1`
 - 当前阶段：首版代码已实现，等待 SnowLuma/QQ 实际群聊联调
 - 适用范围：MaiBot 第三方插件，仅在 SnowLuma Adapter 下的 QQ 群聊中开发验证，不修改 MaiBot 主程序
@@ -163,12 +161,12 @@ ctx.maisaka.context.append(
 
 ## 7. 路由配置
 
-当前插件版本和配置版本均为 `0.1.1`。预期配置结构至少包含：
+预期配置结构至少包含：
 
 ```toml
 [plugin]
-version = "0.1.1"
-config_version = "0.1.1"
+version = ""
+config_version = ""
 
 [routing]
 source_groups = ["123456789", "234567890"]
