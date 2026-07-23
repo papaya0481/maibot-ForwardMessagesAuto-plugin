@@ -6,6 +6,13 @@
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-07-23
+
+### Fixed
+
+- 兼容 SDK 对聊天流 capability 成功响应的自动解包，避免插件启用时误将正常群聊列表识别为格式错误。
+- 修复按群号查询或创建目标聊天流时未识别 SDK 解包后的聊天流字典的问题。
+
 ## [0.1.2] - 2026-07-23
 
 ### Changed
@@ -41,7 +48,8 @@
 - 新增分阶段持久化状态与幂等恢复，避免后续步骤失败时重复发送。
 - 新增测试，覆盖缓存、白名单、消息节点、顺序投递、失败隔离和去重。
 
-[Unreleased]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.3...HEAD
+[0.1.3]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/releases/tag/v0.1.0

@@ -13,6 +13,7 @@ import pytest
 from forward_messages_auto.config import GroupIdList
 from forward_messages_auto.parsing import ForwardMessageParser, PlannerHistoryParser
 from forward_messages_auto.runtime import FORWARD_TOOL_NAME
+from forward_messages_auto.streams import GroupStreamRegistry
 from plugin import ForwardMessagesAutoPlugin
 
 
@@ -152,20 +153,20 @@ class FakeChatCapability:
 
         self.streams = streams
 
-    async def get_group_streams(self, platform: str = "qq") -> dict[str, Any]:
+    async def get_group_streams(self, platform: str = "qq") -> list[dict[str, Any]]:
         """返回全部预设 QQ 群聊流。
 
         Args:
             platform: 待查询平台；测试要求调用方必须传入 ``"qq"``。
 
         Returns:
-            包含 ``success=True`` 和原始 ``streams`` 列表的字典。
+            原始 ``streams`` 列表，模拟 SDK 对成功响应的解包结果。
         """
 
         assert platform == "qq"
-        return {"success": True, "streams": self.streams}
+        return self.streams
 
-    async def get_stream_by_group_id(self, group_id: str, platform: str = "qq") -> dict[str, Any]:
+    async def get_stream_by_group_id(self, group_id: str, platform: str = "qq") -> dict[str, Any] | None:
         """按群号查找第一条匹配的预设聊天流。
 
         Args:
@@ -173,12 +174,13 @@ class FakeChatCapability:
             platform: 待查询平台；测试要求为 ``"qq"``。
 
         Returns:
-            成功格式字典；找到时 ``stream`` 为匹配记录，未找到时为 ``None``。
+            找到时返回原始聊天流字典，未找到时返回 ``None``，模拟 SDK 对成功
+            响应的解包结果。
         """
 
         assert platform == "qq"
         stream = next((item for item in self.streams if item["group_id"] == group_id), None)
-        return {"success": True, "stream": stream}
+        return stream
 
     async def open_session(
         self,
@@ -197,8 +199,8 @@ class FakeChatCapability:
             **kwargs: 本测试替身忽略的其他建流参数。
 
         Returns:
-            包含新聊天流的成功字典。新 ID 使用 ``opened-<group_id>``，
-            并同步追加到 ``streams``。
+            新聊天流字典。新 ID 使用 ``opened-<group_id>``，并同步追加到
+            ``streams``，模拟 SDK 对成功响应的解包结果。
         """
 
         del kwargs
@@ -211,7 +213,7 @@ class FakeChatCapability:
             "session_id": f"opened-{group_id}",
         }
         self.streams.append(stream)
-        return {"success": True, "stream": stream}
+        return stream
 
 
 class FakeSendCapability:
@@ -388,7 +390,7 @@ def build_plugin(
         {
             "plugin": {
                 "enabled": True,
-                "version": "0.1.2",
+                "version": "0.1.3",
                 "config_version": "0.1.1",
             },
             "routing": {
@@ -509,6 +511,34 @@ def test_forward_tool_component_is_visible_only_in_group_scope() -> None:
     component = next(item for item in plugin.get_components() if item["name"] == FORWARD_TOOL_NAME)
     assert component["chat_scope"] == "group"
     assert component["metadata"]["visibility"] == "visible"
+
+
+@pytest.mark.asyncio
+async def test_group_stream_registry_accepts_sdk_unwrapped_chat_results() -> None:
+    """验证聊天流索引兼容 SDK 解包后的列表和聊天流字典。
+
+    SDK 会把群聊列表响应解包为 ``list``，并把单个聊天流响应解包为字典。
+    刷新后 source 会话必须可识别；未预加载的已有 target 必须能被按群号
+    查询，未知 target 必须能创建会话。该测试防止把正常 SDK 返回值误判为
+    格式错误，或在实际投递时错误地重复创建聊天流。
+    """
+
+    context = SimpleNamespace(
+        chat=FakeChatCapability(
+            [
+                {"platform": "qq", "group_id": "10001", "stream_id": "source-stream"},
+                {"platform": "qq", "group_id": "20001", "stream_id": "target-a"},
+            ]
+        ),
+        logger=logging.getLogger("test.forward-plugin"),
+    )
+    registry = GroupStreamRegistry(context)
+    await registry.refresh(["10001"], enabled=True)
+    assert registry.is_source_stream("source-stream") is True
+
+    on_demand_registry = GroupStreamRegistry(context)
+    assert await on_demand_registry.resolve("20001") == "target-a"
+    assert await on_demand_registry.resolve("30001") == "opened-30001"
 
 
 @pytest.mark.asyncio

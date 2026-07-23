@@ -37,8 +37,10 @@ class GroupStreamRegistry:
     async def refresh(self, source_group_ids: list[str], *, enabled: bool) -> None:
         """重新加载 QQ 群聊流，并重建 source 会话索引。
 
-        方法首先清空旧索引。插件未启用时直接保持空索引；查询异常或 Host
-        拒绝请求时记录日志并返回，不向调用方传播这些可恢复错误。
+        方法首先清空旧索引。SDK 会将 ``chat.get_group_streams`` 的成功响应
+        解包为列表，本方法也兼容旧版 SDK 的成功包装字典。插件未启用时直接
+        保持空索引；查询异常、Host 拒绝或返回格式异常时记录诊断日志并返回，
+        不向调用方传播这些可恢复错误。
 
         Args:
             source_group_ids: 已规范化的 source QQ 群号列表。
@@ -55,25 +57,46 @@ class GroupStreamRegistry:
         except Exception as exc:
             self._ctx.logger.warning("读取 QQ 群聊流失败: %s", exc)
             return
-        if not isinstance(result, dict) or not result.get("success", False):
-            error = result.get("error", "未知错误") if isinstance(result, dict) else "返回格式错误"
-            self._ctx.logger.warning("读取 QQ 群聊流被拒绝: %s", error)
+        if isinstance(result, list):
+            streams = result
+        elif isinstance(result, dict):
+            if not result.get("success", False):
+                self._ctx.logger.warning("读取 QQ 群聊流被拒绝: %s", result.get("error", "未知错误"))
+                return
+            streams = result.get("streams")
+        else:
+            self._ctx.logger.warning(
+                "读取 QQ 群聊流返回格式错误: expected=list|dict actual_type=%s",
+                type(result).__name__,
+            )
             return
-
-        streams = result.get("streams")
         if not isinstance(streams, list):
+            self._ctx.logger.warning(
+                "读取 QQ 群聊流返回格式错误: streams_type=%s response_keys=%s",
+                type(streams).__name__,
+                sorted(result) if isinstance(result, dict) else [],
+            )
             return
         for stream in streams:
             self._index_stream(stream)
         self._source_stream_ids = {
             stream_id for group_id in source_group_ids if (stream_id := self._streams_by_group.get(group_id))
         }
+        self._ctx.logger.info(
+            "QQ 群聊流索引已刷新: streams=%d indexed_groups=%d source_configured=%d source_matched=%d",
+            len(streams),
+            len(self._streams_by_group),
+            len(source_group_ids),
+            len(self._source_stream_ids),
+        )
 
     async def resolve(self, group_id: str) -> str:
         """按 QQ 群号解析目标聊天流，必要时创建群聊会话。
 
         解析顺序为：读取内存索引、调用 ``get_stream_by_group_id``、最后调用
-        ``open_session``。查询失败允许降级到创建；创建失败会记录日志。
+        ``open_session``。SDK 会将这两项 capability 的成功响应解包为聊天流
+        字典，本方法也兼容旧版成功包装结构。查询失败允许降级到创建；创建
+        失败会记录日志。
 
         Args:
             group_id: target 白名单中的 QQ 群号字符串。
@@ -135,16 +158,19 @@ class GroupStreamRegistry:
 
         Args:
             result: ``get_stream_by_group_id`` 或 ``open_session`` 的返回值。
-                支持 ID 位于 ``stream`` 字典内或返回值顶层的两种结构。
+                支持 SDK 解包后的聊天流字典、旧版 ``stream`` 包装字典和失败
+                响应。
 
         Returns:
-            capability 成功且包含 ID 时返回去除空白的 ``stream_id`` 或
-            ``session_id``；失败或格式不合法时返回空字符串。
+            成功响应包含 ID 时返回去除空白的 ``stream_id`` 或 ``session_id``；
+            失败或格式不合法时返回空字符串。
         """
 
-        if not isinstance(result, dict) or not result.get("success", False):
+        if not isinstance(result, dict):
             return ""
-        stream = result.get("stream")
+        if result.get("success") is False:
+            return ""
+        stream = result.get("stream", result)
         if isinstance(stream, dict):
             return str(stream.get("stream_id") or stream.get("session_id") or "").strip()
-        return str(result.get("stream_id") or result.get("session_id") or "").strip()
+        return ""
