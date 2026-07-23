@@ -6,6 +6,13 @@
 
 ## [Unreleased]
 
+## [0.1.5] - 2026-07-23
+
+### Fixed
+
+- 配置文件在编辑保存过程中短暂出现未闭合数组等 TOML 语法错误时，继续使用最近一次有效配置，避免默认关闭状态被 Host 误判为主动禁用并卸载插件。
+- 保持合法配置的原生热更新和删除配置后的默认重置语义，无需为修改白名单手动重新启用插件。
+
 ## [0.1.4] - 2026-07-23
 
 ### Changed
@@ -54,7 +61,8 @@
 - 新增分阶段持久化状态与幂等恢复，避免后续步骤失败时重复发送。
 - 新增测试，覆盖缓存、白名单、消息节点、顺序投递、失败隔离和去重。
 
-[Unreleased]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.4...HEAD
+[Unreleased]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.5...HEAD
+[0.1.5]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.1...v0.1.2

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from pathlib import Path
 from typing import Any
 
 from maibot_sdk import HookHandler, MaiBotPlugin, Tool
@@ -14,6 +16,7 @@ if __package__:
         ForwardMessagesAutoConfig,
         ForwardingRuntime,
     )
+    from .forward_messages_auto.config_recovery import LastKnownGoodConfig
     from .forward_messages_auto.runtime import FORWARD_TOOL_NAME
 else:
     from forward_messages_auto import (
@@ -22,6 +25,7 @@ else:
         ForwardMessagesAutoConfig,
         ForwardingRuntime,
     )
+    from forward_messages_auto.config_recovery import LastKnownGoodConfig
     from forward_messages_auto.runtime import FORWARD_TOOL_NAME
 
 
@@ -39,6 +43,42 @@ class ForwardMessagesAutoPlugin(MaiBotPlugin):
 
         super().__init__()
         self._runtime: ForwardingRuntime | None = None
+        self._config_recovery = LastKnownGoodConfig(Path(__file__).resolve().with_name("config.toml"))
+
+    def normalize_plugin_config(
+        self,
+        config_data: Mapping[str, Any] | None,
+    ) -> tuple[dict[str, Any], bool]:
+        """校验新配置，并在 TOML 临时不完整时保留最近有效配置。
+
+        Runner 的文件监听可能在编辑器尚未写完数组时读取失败，并在调用本
+        方法前重建出默认配置。此时方法仅在磁盘文件确实不可解析时恢复最近
+        一次有效快照，避免默认关闭状态被误判为用户主动禁用。合法配置仍交
+        给 SDK 合并和校验；配置文件被删除时也继续使用 SDK 默认配置。
+
+        Args:
+            config_data: Runner 完成版本预处理后的插件配置；解析失败时通常
+                是配置模型生成的完整默认值。
+
+        Returns:
+            二元组包含可注入的完整配置字典，以及 SDK 是否需要把归一化结果
+            视为发生变化。恢复旧快照时第二项固定为 ``False``。
+        """
+
+        recovered_config = self._config_recovery.recover_for_invalid_file(
+            config_data,
+            type(self).build_default_config(),
+        )
+        if recovered_config is not None:
+            try:
+                self.ctx.logger.warning("config.toml 当前不可解析，继续使用最近一次有效配置并等待下次保存")
+            except (AttributeError, RuntimeError):
+                pass
+            return recovered_config, False
+
+        normalized_config, changed = super().normalize_plugin_config(config_data)
+        self._config_recovery.remember(normalized_config)
+        return normalized_config, changed
 
     @property
     def runtime(self) -> ForwardingRuntime:
