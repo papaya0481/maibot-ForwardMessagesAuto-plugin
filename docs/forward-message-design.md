@@ -5,7 +5,7 @@
 - 插件初始版本：`0.1.0`
 - 配置初始版本：`0.1.0`
 - 当前阶段：功能设计，尚未实现
-- 适用范围：MaiBot 第三方插件，不修改 MaiBot 主程序
+- 适用范围：MaiBot 第三方插件，仅在 SnowLuma Adapter 下的 QQ 群聊中开发验证，不修改 MaiBot 主程序
 
 ## 2. 功能目标
 
@@ -41,12 +41,12 @@ Target 是接收合并转发消息的目标群聊。只有列入 target 白名�
 
 初版只提供两个独立白名单：
 
-- source 白名单：允许作为消息来源并触发插件工具的群；
-- target 白名单：允许接收插件转发消息的群。
+- source 白名单：允许作为消息来源并触发插件工具的 QQ 群号；
+- target 白名单：允许接收插件转发消息的 QQ 群号。
 
 不提供黑名单，也不采用“除黑名单外全部允许”的隐式规则。新增群聊不会自动获得 source 或 target 权限。
 
-在多账号环境中，群聊身份不应只使用 `group_id`，而应至少由 `platform`、`account_id` 和 `group_id` 共同确定，避免不同账号下的群聊路由混淆。
+初版固定使用 SnowLuma Adapter 和 QQ 平台，因此配置中只保存群号，不增加 `platform`、`account_id` 或其他复合路由字段。插件运行时负责根据群号解析对应聊天流。
 
 ## 4. 完整处理流程
 
@@ -168,23 +168,19 @@ version = "0.1.0"
 config_version = "0.1.0"
 
 [routing]
-source_groups = [
-  { platform = "qq", account_id = "bot-account", group_id = "source-group" }
-]
-
-target_groups = [
-  { platform = "qq", account_id = "bot-account", group_id = "target-a", enabled = true, allow_comment = true },
-  { platform = "qq", account_id = "bot-account", group_id = "target-b", enabled = true, allow_comment = true }
-]
+source_groups = ["123456789", "234567890"]
+target_groups = ["345678901", "456789012"]
 ```
 
-具体配置格式可以在实现阶段根据 maibot-plugin-sdk 的配置模型调整，但必须保持：
+群号使用字符串保存，避免配置解析或数值类型差异。`target_groups` 的排列顺序就是转发处理顺序。具体字段声明可以在实现阶段根据 maibot-plugin-sdk 的配置模型调整，但必须保持：
 
 - source 与 target 白名单分离；
-- target 顺序稳定且可配置；
+- 白名单成员只使用 QQ 群号；
+- 仅支持 SnowLuma Adapter 下的 QQ 群聊；
+- target 顺序与配置列表顺序一致；
 - 未明确列出的群没有权限；
 - 插件版本和配置版本同步；
-- 配置更新后重新校验聊天流和重复 target。
+- 配置更新后重新校验群号、聊天流和重复 target。
 
 ## 8. 失败处理
 
