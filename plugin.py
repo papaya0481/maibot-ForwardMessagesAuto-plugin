@@ -1,0 +1,116 @@
+"""麦麦自动跨群转发插件。"""
+
+from __future__ import annotations
+
+import asyncio
+from typing import Any
+
+from maibot_sdk import Field, MaiBotPlugin, PluginConfigBase
+
+PLUGIN_VERSION = "0.1.0"
+CONFIG_VERSION = PLUGIN_VERSION
+
+
+class PluginSectionConfig(PluginConfigBase):
+    """插件基础配置。"""
+
+    __ui_label__ = "插件"
+    __ui_icon__ = "package"
+    __ui_order__ = 0
+
+    enabled: bool = Field(default=False, description="是否启用自动跨群转发")
+    version: str = Field(default=PLUGIN_VERSION, description="插件版本")
+    config_version: str = Field(default=CONFIG_VERSION, description="配置版本")
+
+
+class RoutingConfig(PluginConfigBase):
+    """QQ 群白名单配置。"""
+
+    __ui_label__ = "群聊路由"
+    __ui_icon__ = "route"
+    __ui_order__ = 1
+
+    source_groups: list[str] = Field(
+        default_factory=list,
+        description="允许触发自动转发的 QQ 群号列表",
+    )
+    target_groups: list[str] = Field(
+        default_factory=list,
+        description="允许接收自动转发的 QQ 群号列表，列表顺序即处理顺序",
+    )
+
+
+class BehaviorConfig(PluginConfigBase):
+    """转发行为配置。"""
+
+    __ui_label__ = "转发行为"
+    __ui_icon__ = "message-square-share"
+    __ui_order__ = 2
+
+    view_cache_ttl_seconds: int = Field(
+        default=1800,
+        description="view_forward_message 完整内容的缓存秒数",
+    )
+    dedupe_ttl_seconds: int = Field(
+        default=604800,
+        description="已处理转发任务的去重记录保留秒数",
+    )
+    trigger_target_planner: bool = Field(
+        default=True,
+        description="发送成功后是否触发目标群 Planner 自主决定是否评论",
+    )
+
+
+class ForwardMessagesAutoConfig(PluginConfigBase):
+    """插件完整配置。"""
+
+    plugin: PluginSectionConfig = Field(default_factory=PluginSectionConfig)
+    routing: RoutingConfig = Field(default_factory=RoutingConfig)
+    behavior: BehaviorConfig = Field(default_factory=BehaviorConfig)
+
+
+class ForwardMessagesAutoPlugin(MaiBotPlugin):
+    """自动跨群转发插件。"""
+
+    config_model = ForwardMessagesAutoConfig
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._background_tasks: set[asyncio.Task[Any]] = set()
+
+    async def on_load(self) -> None:
+        """初始化插件运行时状态。"""
+
+        self.ctx.logger.info(
+            "麦麦自动跨群转发插件 v%s 已加载，enabled=%s",
+            PLUGIN_VERSION,
+            self.config.plugin.enabled,
+        )
+
+    async def on_unload(self) -> None:
+        """取消仍在运行的后台任务。"""
+
+        tasks = list(self._background_tasks)
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._background_tasks.clear()
+        self.ctx.logger.info("麦麦自动跨群转发插件已卸载")
+
+    async def on_config_update(
+        self,
+        scope: str,
+        config_data: dict[str, Any],
+        version: str,
+    ) -> None:
+        """响应插件配置热更新。"""
+
+        del config_data
+        self.ctx.logger.info("自动跨群转发配置已更新: scope=%s version=%s", scope, version)
+
+
+def create_plugin() -> ForwardMessagesAutoPlugin:
+    """创建插件实例。"""
+
+    return ForwardMessagesAutoPlugin()
