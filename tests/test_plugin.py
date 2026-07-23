@@ -8,13 +8,10 @@ from typing import Any
 
 import pytest
 
-from plugin import (
-    FORWARD_TOOL_NAME,
-    ForwardMessagesAutoPlugin,
-    extract_forward_payload,
-    extract_view_forward_results,
-    normalize_group_ids,
-)
+from forward_messages_auto.config import GroupIdList
+from forward_messages_auto.parsing import ForwardMessageParser, PlannerHistoryParser
+from forward_messages_auto.runtime import FORWARD_TOOL_NAME
+from plugin import ForwardMessagesAutoPlugin
 
 
 def build_forward_message(*, stream_id: str = "source-stream", group_id: str = "10001") -> dict[str, Any]:
@@ -224,17 +221,25 @@ def build_plugin(
 
 
 async def wait_for_background_tasks(plugin: ForwardMessagesAutoPlugin) -> None:
-    tasks = list(plugin._background_tasks)
+    tasks = list(plugin.runtime.background_tasks)
     if tasks:
         await asyncio.gather(*tasks)
 
 
 def test_normalize_group_ids_preserves_order_and_deduplicates() -> None:
-    assert normalize_group_ids([" 100 ", 200, "100", "", None, "300"]) == ["100", "200", "300"]
+    """验证群号清洗会去空、去重，并保持配置中的首次出现顺序。"""
+
+    assert GroupIdList.normalize([" 100 ", 200, "100", "", None, "300"]) == [
+        "100",
+        "200",
+        "300",
+    ]
 
 
 def test_extract_forward_payload_preserves_nodes_and_binary_data() -> None:
-    payload = extract_forward_payload(build_forward_message())
+    """验证合并转发解析会保留节点身份、消息段和媒体二进制数据。"""
+
+    payload = ForwardMessageParser.extract(build_forward_message())
     assert payload is not None
     segment, messages = payload
     assert segment["type"] == "forward"
@@ -243,6 +248,8 @@ def test_extract_forward_payload_preserves_nodes_and_binary_data() -> None:
 
 
 def test_extract_view_forward_results_pairs_tool_call_and_result() -> None:
+    """验证 Planner 历史解析能按 call_id 配对查看调用与完整结果。"""
+
     messages = [
         {
             "role": "assistant",
@@ -263,10 +270,12 @@ def test_extract_view_forward_results_pairs_tool_call_and_result() -> None:
             "tool_call_id": "call-1",
         },
     ]
-    assert extract_view_forward_results(messages) == [("message-1", "完整展开内容")]
+    assert PlannerHistoryParser.extract_view_results(messages) == [("message-1", "完整展开内容")]
 
 
 def test_forward_tool_component_is_visible_only_in_group_scope() -> None:
+    """验证公开转发 Tool 的组件元数据只允许群聊调用。"""
+
     plugin = ForwardMessagesAutoPlugin()
     plugin.set_plugin_config({})
     component = next(item for item in plugin.get_components() if item["name"] == FORWARD_TOOL_NAME)
@@ -276,6 +285,8 @@ def test_forward_tool_component_is_visible_only_in_group_scope() -> None:
 
 @pytest.mark.asyncio
 async def test_hook_caches_view_result_and_hides_tool_outside_source(tmp_path: Path) -> None:
+    """验证 Hook 在 source 缓存查看结果，并在其他会话隐藏转发 Tool。"""
+
     plugin = build_plugin(tmp_path)
     await plugin.on_load()
     messages = [
@@ -304,7 +315,7 @@ async def test_hook_caches_view_result_and_hides_tool_outside_source(tmp_path: P
         messages=messages,
         tool_definitions=definitions,
     )
-    assert plugin._get_cached_view_content("source-stream", "forward-message") == "完整展开内容"
+    assert plugin.runtime.view_cache.get("source-stream", "forward-message", 1800) == "完整展开内容"
     assert len(source_result["modified_kwargs"]["tool_definitions"]) == 2
 
     other_result = await plugin.capture_view_forward_result(
@@ -318,11 +329,15 @@ async def test_hook_caches_view_result_and_hides_tool_outside_source(tmp_path: P
 
 @pytest.mark.asyncio
 async def test_tool_sends_targets_in_order_and_deduplicates(tmp_path: Path) -> None:
+    """验证多目标按配置顺序处理，并阻止已完成任务再次发送。"""
+
     plugin = build_plugin(tmp_path)
     await plugin.on_load()
-    plugin._view_cache[("source-stream", "forward-message")] = SimpleNamespace(
-        content="完整展开内容",
-        cached_at=10**12,
+    plugin.runtime.view_cache.put(
+        "source-stream",
+        "forward-message",
+        "完整展开内容",
+        now=10**12,
     )
 
     result = await plugin.request_cross_group_forward(
@@ -362,6 +377,8 @@ async def test_tool_sends_targets_in_order_and_deduplicates(tmp_path: Path) -> N
 
 @pytest.mark.asyncio
 async def test_send_failure_skips_context_but_continues_next_target(tmp_path: Path) -> None:
+    """验证某目标发送失败时跳过其后续阶段，但继续处理下一目标。"""
+
     plugin = build_plugin(tmp_path, failed_streams={"target-a"})
     await plugin.on_load()
     result = await plugin.request_cross_group_forward(
@@ -385,6 +402,8 @@ async def test_send_failure_skips_context_but_continues_next_target(tmp_path: Pa
 
 @pytest.mark.asyncio
 async def test_persisted_stage_resumes_without_sending_again(tmp_path: Path) -> None:
+    """验证重载后从持久化阶段恢复，避免重复发送已经成功的消息。"""
+
     first_plugin = build_plugin(tmp_path, failed_context_streams={"target-a"})
     await first_plugin.on_load()
     first_result = await first_plugin.request_cross_group_forward(
@@ -423,6 +442,8 @@ async def test_persisted_stage_resumes_without_sending_again(tmp_path: Path) -> 
 
 @pytest.mark.asyncio
 async def test_tool_rejects_non_source_group(tmp_path: Path) -> None:
+    """验证非 source 白名单群会在读取消息前被 Tool 拒绝。"""
+
     plugin = build_plugin(tmp_path)
     await plugin.on_load()
     result = await plugin.request_cross_group_forward(
