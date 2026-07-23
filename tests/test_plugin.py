@@ -122,8 +122,13 @@ class FakeSendCapability:
 
 
 class FakeMaisakaContextCapability:
-    def __init__(self, events: list[tuple[str, str]]) -> None:
+    def __init__(
+        self,
+        events: list[tuple[str, str]],
+        failed_streams: set[str] | None = None,
+    ) -> None:
         self.events = events
+        self.failed_streams = failed_streams or set()
         self.visible_text_by_stream: dict[str, str] = {}
 
     async def append(
@@ -137,6 +142,8 @@ class FakeMaisakaContextCapability:
         del kwargs
         assert segments[0]["type"] == "forward"
         self.events.append(("context", stream_id))
+        if stream_id in self.failed_streams:
+            return {"success": False, "error": "模拟上下文失败"}
         self.visible_text_by_stream[stream_id] = visible_text
         return {"success": True}
 
@@ -160,6 +167,7 @@ class FakeContext:
         message: dict[str, Any],
         streams: list[dict[str, Any]],
         failed_streams: set[str] | None = None,
+        failed_context_streams: set[str] | None = None,
     ) -> None:
         self.logger = logging.getLogger("test.forward-plugin")
         self.paths = SimpleNamespace(data_dir=data_dir, runtime_dir=data_dir / "runtime")
@@ -168,12 +176,17 @@ class FakeContext:
         self.chat = FakeChatCapability(streams)
         self.send = FakeSendCapability(self.events, failed_streams)
         self.maisaka = SimpleNamespace(
-            context=FakeMaisakaContextCapability(self.events),
+            context=FakeMaisakaContextCapability(self.events, failed_context_streams),
             proactive=FakeMaisakaProactiveCapability(self.events),
         )
 
 
-def build_plugin(tmp_path: Path, *, failed_streams: set[str] | None = None) -> ForwardMessagesAutoPlugin:
+def build_plugin(
+    tmp_path: Path,
+    *,
+    failed_streams: set[str] | None = None,
+    failed_context_streams: set[str] | None = None,
+) -> ForwardMessagesAutoPlugin:
     plugin = ForwardMessagesAutoPlugin()
     plugin.set_plugin_config(
         {
@@ -204,6 +217,7 @@ def build_plugin(tmp_path: Path, *, failed_streams: set[str] | None = None) -> F
             message=build_forward_message(),
             streams=streams,
             failed_streams=failed_streams,
+            failed_context_streams=failed_context_streams,
         )
     )
     return plugin
@@ -367,6 +381,44 @@ async def test_send_failure_skips_context_but_continues_next_target(tmp_path: Pa
         ("planner", "target-b"),
     ]
     await plugin.on_unload()
+
+
+@pytest.mark.asyncio
+async def test_persisted_stage_resumes_without_sending_again(tmp_path: Path) -> None:
+    first_plugin = build_plugin(tmp_path, failed_context_streams={"target-a"})
+    await first_plugin.on_load()
+    first_result = await first_plugin.request_cross_group_forward(
+        "forward-message",
+        content_summary="降级摘要",
+        platform="qq",
+        group_id="10001",
+        stream_id="source-stream",
+    )
+    assert first_result["accepted"] is True
+    await wait_for_background_tasks(first_plugin)
+    assert first_plugin.ctx.events[:3] == [
+        ("send", "target-a"),
+        ("context", "target-a"),
+        ("send", "target-b"),
+    ]
+    await first_plugin.on_unload()
+
+    resumed_plugin = build_plugin(tmp_path)
+    await resumed_plugin.on_load()
+    resumed_result = await resumed_plugin.request_cross_group_forward(
+        "forward-message",
+        content_summary="降级摘要",
+        platform="qq",
+        group_id="10001",
+        stream_id="source-stream",
+    )
+    assert resumed_result["accepted"] is True
+    await wait_for_background_tasks(resumed_plugin)
+    assert resumed_plugin.ctx.events == [
+        ("context", "target-a"),
+        ("planner", "target-a"),
+    ]
+    await resumed_plugin.on_unload()
 
 
 @pytest.mark.asyncio
