@@ -16,6 +16,22 @@ class GroupIdList:
 
     @staticmethod
     def normalize(values: Iterable[Any]) -> list[str]:
+        """将配置中的任意群号值规范化为有序字符串列表。
+
+        每个值都会先转换为字符串并去除首尾空白。空值和重复值会被忽略，
+        重复项保留第一次出现的位置。
+
+        Args:
+            values: 可迭代的群号配置值，元素可以是字符串、整数或空值。
+
+        Returns:
+            去空、去重且保持首次出现顺序的 QQ 群号字符串列表。
+
+        Examples:
+            ``GroupIdList.normalize([" 100 ", 200, "100"])`` 返回
+            ``["100", "200"]``。
+        """
+
         result: list[str] = []
         seen: set[str] = set()
         for value in values:

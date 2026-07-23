@@ -22,19 +22,40 @@ class ForwardMessagesAutoPlugin(MaiBotPlugin):
     config_model = ForwardMessagesAutoConfig
 
     def __init__(self) -> None:
+        """创建尚未启动运行时的插件实例。
+
+        SDK 上下文和配置会在 Runner 加载阶段注入。构造方法仅初始化运行时
+        引用；磁盘状态、聊天流和后台服务由 ``on_load`` 创建。
+        """
+
         super().__init__()
         self._runtime: ForwardingRuntime | None = None
 
     @property
     def runtime(self) -> ForwardingRuntime:
-        """返回已经由生命周期初始化的运行时。"""
+        """返回已经由插件加载生命周期初始化的运行时。
+
+        Returns:
+            当前插件实例共享的 ``ForwardingRuntime``。
+
+        Raises:
+            RuntimeError: 在 ``on_load`` 完成前或运行时尚未创建时访问。
+        """
 
         if self._runtime is None:
             raise RuntimeError("插件运行时尚未初始化")
         return self._runtime
 
     def get_components(self) -> list[dict[str, Any]]:
-        """将转发工具明确限制为群聊组件。"""
+        """读取 SDK 组件定义，并强制转发 Tool 只在群聊生效。
+
+        方法保留 SDK 生成的全部组件，仅对 ``request_cross_group_forward``
+        设置顶层 ``chat_scope="group"``，并移除 metadata 中可能重复的同名
+        字段，以符合 Host 的组件元数据格式。
+
+        Returns:
+            可注册到 Host 的组件定义列表。
+        """
 
         components = super().get_components()
         for component in components:
@@ -47,7 +68,12 @@ class ForwardMessagesAutoPlugin(MaiBotPlugin):
         return components
 
     async def on_load(self) -> None:
-        """创建并启动插件运行时。"""
+        """创建运行时并完成插件加载准备。
+
+        方法装配使用动态配置提供器的 ``ForwardingRuntime``，依次加载状态、
+        清理过期记录和刷新 source 聊天流索引，随后检查版本字段并记录当前
+        启用状态及白名单数量。
+        """
 
         self._runtime = ForwardingRuntime(self.ctx, lambda: self.config)
         await self.runtime.start()
@@ -61,7 +87,11 @@ class ForwardMessagesAutoPlugin(MaiBotPlugin):
         )
 
     async def on_unload(self) -> None:
-        """停止后台任务并保存运行时状态。"""
+        """停止后台任务、保存状态并完成插件卸载。
+
+        即使运行时尚未创建也允许安全调用。已创建时会取消并等待所有转发
+        任务，再持久化最后阶段，避免卸载后继续向目标群发送。
+        """
 
         if self._runtime is not None:
             await self._runtime.stop()
@@ -73,7 +103,14 @@ class ForwardMessagesAutoPlugin(MaiBotPlugin):
         config_data: dict[str, Any],
         version: str,
     ) -> None:
-        """让运行时应用热更新后的配置。"""
+        """让运行时应用 Runner 已写入的新配置。
+
+        Args:
+            scope: 配置更新范围，由 MaiBot Runner 提供并写入日志。
+            config_data: 更新后的原始配置字典。本插件通过 ``self.config``
+                读取强类型配置，因此不直接消费该参数。
+            version: 本次热更新事件携带的配置版本标识，用于日志追踪。
+        """
 
         del config_data
         if self._runtime is not None:
@@ -82,7 +119,11 @@ class ForwardMessagesAutoPlugin(MaiBotPlugin):
         self.ctx.logger.info("自主跨群转发配置已更新: scope=%s version=%s", scope, version)
 
     def _warn_for_version_mismatch(self) -> None:
-        """记录用户配置中不一致的只读版本字段。"""
+        """检查配置声明的版本字段并记录不一致警告。
+
+        该方法不修改用户配置，也不阻止插件加载。插件版本和配置版本分别与
+        源码常量比较，以提示旧配置或手工编辑造成的偏差。
+        """
 
         if self.config.plugin.version != PLUGIN_VERSION:
             self.ctx.logger.warning(
@@ -107,7 +148,24 @@ class ForwardMessagesAutoPlugin(MaiBotPlugin):
         error_policy=ErrorPolicy.SKIP,
     )
     async def capture_view_forward_result(self, **kwargs: Any) -> dict[str, Any]:
-        """缓存查看结果，并从非 source 会话移除转发工具。"""
+        """缓存 source 查看结果，并控制自主转发 Tool 的会话可见性。
+
+        source 白名单会话会从 Planner 历史中提取
+        ``view_forward_message`` 结果；其他会话则从工具定义中移除本插件
+        Tool。除 ``tool_definitions`` 的定向筛选外，其余 Hook 参数原样返回。
+
+        Args:
+            **kwargs: ``maisaka.planner.before_request`` Hook 参数。使用
+                ``session_id`` 判断会话，使用 ``messages`` 提取查看结果，并
+                可更新 ``tool_definitions`` 列表。
+
+        Returns:
+            阻塞 Hook 的继续结果：
+            ``{"action": "continue", "modified_kwargs": kwargs}``。
+
+        Raises:
+            RuntimeError: Hook 在 ``on_load`` 初始化运行时前被调用。
+        """
 
         session_id = str(kwargs.get("session_id") or "").strip()
         is_source_session = self.runtime.is_source_session(session_id)
@@ -158,7 +216,27 @@ class ForwardMessagesAutoPlugin(MaiBotPlugin):
         content_summary: str = "",
         **kwargs: Any,
     ) -> dict[str, Any]:
-        """委托运行时校验消息并创建后台转发任务。"""
+        """请求把一则已完整查看的 source 合并转发分享至白名单群。
+
+        该 Tool 不接收 target 参数；目标集合和顺序只能来自插件配置。方法
+        将 SDK 调用上下文和 Planner 参数交给运行时，验证成功后快速返回，
+        实际发送在后台进行。
+
+        Args:
+            msg_id: 刚通过 ``view_forward_message`` 查看过的源消息 ID。
+            sharing_reason: Planner 判断内容值得分享的简短理由。
+            content_summary: 查看结果缓存失效时使用的忠实内容摘要。
+            **kwargs: SDK 注入的 Tool 上下文。必须能解析 QQ ``platform``、
+                ``group_id`` 和 ``stream_id`` 或 ``chat_id``。
+
+        Returns:
+            Planner 可读的任务结果。新任务包含 ``accepted=True``、任务 ID
+            和目标数量；重复任务包含 ``accepted=False``；拒绝时包含
+            ``success=False`` 和中文原因。
+
+        Raises:
+            RuntimeError: Tool 在 ``on_load`` 初始化运行时前被调用。
+        """
 
         return await self.runtime.request_forward(
             msg_id,
@@ -169,6 +247,11 @@ class ForwardMessagesAutoPlugin(MaiBotPlugin):
 
 
 def create_plugin() -> ForwardMessagesAutoPlugin:
-    """创建插件实例。"""
+    """创建供 MaiBot Runner 加载的插件实例。
+
+    Returns:
+        尚未注入上下文或启动运行时的 ``ForwardMessagesAutoPlugin``。Runner
+        随后负责设置配置与上下文并调用 ``on_load``。
+    """
 
     return ForwardMessagesAutoPlugin()

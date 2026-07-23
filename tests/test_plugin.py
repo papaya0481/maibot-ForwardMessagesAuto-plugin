@@ -15,6 +15,17 @@ from plugin import ForwardMessagesAutoPlugin
 
 
 def build_forward_message(*, stream_id: str = "source-stream", group_id: str = "10001") -> dict[str, Any]:
+    """构造包含文字、图片和二进制数据的 Host 合并转发消息。
+
+    Args:
+        stream_id: 消息所属的 MaiBot 聊天流 ID。
+        group_id: 消息所属的 QQ 群号。
+
+    Returns:
+        可供 ``FakeMessageCapability`` 返回的消息字典。固定消息 ID 为
+        ``forward-message``，并包含一个昵称为“群友甲”的转发节点。
+    """
+
     return {
         "message_id": "forward-message",
         "session_id": stream_id,
@@ -48,6 +59,12 @@ def build_forward_message(*, stream_id: str = "source-stream", group_id: str = "
 
 class FakeMessageCapability:
     def __init__(self, message: dict[str, Any]) -> None:
+        """创建始终返回指定消息的查询能力替身。
+
+        Args:
+            message: 每次 ``get_by_id`` 成功结果中返回的 Host 消息字典。
+        """
+
         self.message = message
         self.calls: list[tuple[str, str, bool]] = []
 
@@ -59,6 +76,18 @@ class FakeMessageCapability:
         include_binary_data: bool = False,
         **kwargs: Any,
     ) -> dict[str, Any]:
+        """记录消息查询参数并返回预设成功结果。
+
+        Args:
+            message_id: 被查询的消息 ID。
+            stream_id: 调用方用于限制消息归属的聊天流 ID。
+            include_binary_data: 是否请求媒体二进制字段。
+            **kwargs: 本测试替身忽略的其他 capability 参数。
+
+        Returns:
+            ``{"success": True, "message": self.message}``。
+        """
+
         del kwargs
         self.calls.append((message_id, stream_id, include_binary_data))
         return {"success": True, "message": self.message}
@@ -66,13 +95,39 @@ class FakeMessageCapability:
 
 class FakeChatCapability:
     def __init__(self, streams: list[dict[str, Any]]) -> None:
+        """创建使用可变聊天流列表的能力替身。
+
+        Args:
+            streams: 初始 QQ 群聊流列表。``open_session`` 会向该列表追加
+                新建会话，便于后续查询复用。
+        """
+
         self.streams = streams
 
     async def get_group_streams(self, platform: str = "qq") -> dict[str, Any]:
+        """返回全部预设 QQ 群聊流。
+
+        Args:
+            platform: 待查询平台；测试要求调用方必须传入 ``"qq"``。
+
+        Returns:
+            包含 ``success=True`` 和原始 ``streams`` 列表的字典。
+        """
+
         assert platform == "qq"
         return {"success": True, "streams": self.streams}
 
     async def get_stream_by_group_id(self, group_id: str, platform: str = "qq") -> dict[str, Any]:
+        """按群号查找第一条匹配的预设聊天流。
+
+        Args:
+            group_id: 要查找的 QQ 群号。
+            platform: 待查询平台；测试要求为 ``"qq"``。
+
+        Returns:
+            成功格式字典；找到时 ``stream`` 为匹配记录，未找到时为 ``None``。
+        """
+
         assert platform == "qq"
         stream = next((item for item in self.streams if item["group_id"] == group_id), None)
         return {"success": True, "stream": stream}
@@ -85,6 +140,19 @@ class FakeChatCapability:
         group_id: str,
         **kwargs: Any,
     ) -> dict[str, Any]:
+        """模拟为此前未知的 QQ 群创建聊天流。
+
+        Args:
+            platform: 会话平台，必须为 ``"qq"``。
+            chat_type: 会话类型，必须为 ``"group"``。
+            group_id: 要创建聊天流的 QQ 群号。
+            **kwargs: 本测试替身忽略的其他建流参数。
+
+        Returns:
+            包含新聊天流的成功字典。新 ID 使用 ``opened-<group_id>``，
+            并同步追加到 ``streams``。
+        """
+
         del kwargs
         assert platform == "qq"
         assert chat_type == "group"
@@ -100,6 +168,14 @@ class FakeChatCapability:
 
 class FakeSendCapability:
     def __init__(self, events: list[tuple[str, str]], failed_streams: set[str] | None = None) -> None:
+        """创建记录发送顺序并可定向失败的发送替身。
+
+        Args:
+            events: 所有 Fake capability 共享的事件列表。
+            failed_streams: 应返回模拟发送失败的目标聊天流集合；省略时全部
+                发送成功。
+        """
+
         self.events = events
         self.failed_streams = failed_streams or set()
         self.messages_by_stream: dict[str, list[dict[str, Any]]] = {}
@@ -110,6 +186,19 @@ class FakeSendCapability:
         stream_id: str,
         **kwargs: Any,
     ) -> dict[str, Any]:
+        """记录一次合并转发调用并按配置返回成功或失败。
+
+        Args:
+            messages: 传给 ``ctx.send.forward`` 的规范化转发节点。
+            stream_id: 接收消息的目标聊天流 ID。
+            **kwargs: 发送选项；测试会断言
+                ``sync_to_maisaka_history`` 为 ``False``。
+
+        Returns:
+            目标位于 ``failed_streams`` 时返回模拟失败字典，否则返回
+            ``{"success": True}``。
+        """
+
         assert kwargs["sync_to_maisaka_history"] is False
         self.events.append(("send", stream_id))
         self.messages_by_stream[stream_id] = messages
@@ -124,6 +213,13 @@ class FakeMaisakaContextCapability:
         events: list[tuple[str, str]],
         failed_streams: set[str] | None = None,
     ) -> None:
+        """创建记录上下文写入并可定向失败的能力替身。
+
+        Args:
+            events: 所有 Fake capability 共享的事件列表。
+            failed_streams: 应返回模拟上下文失败的聊天流集合。
+        """
+
         self.events = events
         self.failed_streams = failed_streams or set()
         self.visible_text_by_stream: dict[str, str] = {}
@@ -136,6 +232,19 @@ class FakeMaisakaContextCapability:
         visible_text: str,
         **kwargs: Any,
     ) -> dict[str, Any]:
+        """验证并记录一次目标群 Maisaka 上下文追加。
+
+        Args:
+            stream_id: 接收上下文的目标聊天流 ID。
+            segments: 待写入的消息段；首段必须是 ``forward``。
+            visible_text: 目标 Planner 可读取的源群展开文本。
+            **kwargs: 本测试替身忽略的来源类型和消息 ID 等参数。
+
+        Returns:
+            目标位于 ``failed_streams`` 时返回模拟失败；否则保存
+            ``visible_text`` 并返回成功字典。
+        """
+
         del kwargs
         assert segments[0]["type"] == "forward"
         self.events.append(("context", stream_id))
@@ -147,9 +256,26 @@ class FakeMaisakaContextCapability:
 
 class FakeMaisakaProactiveCapability:
     def __init__(self, events: list[tuple[str, str]]) -> None:
+        """创建记录目标 Planner 触发顺序的能力替身。
+
+        Args:
+            events: 所有 Fake capability 共享的事件列表。
+        """
+
         self.events = events
 
     async def trigger(self, stream_id: str, intent: str, **kwargs: Any) -> dict[str, Any]:
+        """验证无需重复查看的意图并模拟主动任务入队。
+
+        Args:
+            stream_id: 要触发 Planner 的目标聊天流 ID。
+            intent: 投递服务生成的 Planner 意图文本。
+            **kwargs: 本测试替身忽略的 reason、priority 和 metadata。
+
+        Returns:
+            包含 ``success=True``、``queued=True`` 和可预测任务 ID 的字典。
+        """
+
         del kwargs
         assert "无需再次调用 view_forward_message" in intent
         self.events.append(("planner", stream_id))
@@ -166,6 +292,20 @@ class FakeContext:
         failed_streams: set[str] | None = None,
         failed_context_streams: set[str] | None = None,
     ) -> None:
+        """组装插件测试所需的最小 ``PluginContext`` 替身。
+
+        Args:
+            data_dir: 状态文件和运行时目录使用的 pytest 临时路径。
+            message: 消息查询能力应返回的 source 消息。
+            streams: 初始 QQ 群聊流列表。
+            failed_streams: 应模拟物理发送失败的聊天流集合。
+            failed_context_streams: 应模拟 Maisaka 上下文失败的聊天流集合。
+
+        Note:
+            ``events`` 在发送、上下文和 Planner 三种能力间共享，用于断言
+            跨 target 的全局调用顺序。
+        """
+
         self.logger = logging.getLogger("test.forward-plugin")
         self.paths = SimpleNamespace(data_dir=data_dir, runtime_dir=data_dir / "runtime")
         self.events: list[tuple[str, str]] = []
@@ -184,6 +324,17 @@ def build_plugin(
     failed_streams: set[str] | None = None,
     failed_context_streams: set[str] | None = None,
 ) -> ForwardMessagesAutoPlugin:
+    """构造启用状态下、带一个 source 和两个 target 的插件。
+
+    Args:
+        tmp_path: pytest 提供的临时目录，用于隔离持久化状态文件。
+        failed_streams: 应由发送能力模拟失败的目标聊天流集合。
+        failed_context_streams: 应由上下文能力模拟失败的目标聊天流集合。
+
+    Returns:
+        已注入强类型配置和 ``FakeContext``、但尚未调用 ``on_load`` 的插件。
+    """
+
     plugin = ForwardMessagesAutoPlugin()
     plugin.set_plugin_config(
         {
@@ -221,13 +372,27 @@ def build_plugin(
 
 
 async def wait_for_background_tasks(plugin: ForwardMessagesAutoPlugin) -> None:
+    """等待当前快照中的全部后台投递任务结束。
+
+    Args:
+        plugin: 已加载并可能安排了转发任务的插件实例。
+
+    Note:
+        方法先复制任务集合，避免任务完成回调在等待期间修改原集合。
+    """
+
     tasks = list(plugin.runtime.background_tasks)
     if tasks:
         await asyncio.gather(*tasks)
 
 
 def test_normalize_group_ids_preserves_order_and_deduplicates() -> None:
-    """验证群号清洗会去空、去重，并保持配置中的首次出现顺序。"""
+    """验证群号清洗会规范类型、去空、去重并保持首次顺序。
+
+    输入同时覆盖带空格字符串、整数、重复项、空字符串和 ``None``，期望
+    返回 ``["100", "200", "300"]``。该测试防止路由清洗改变 target
+    投递顺序，或因配置值类型不同产生重复投递。
+    """
 
     assert GroupIdList.normalize([" 100 ", 200, "100", "", None, "300"]) == [
         "100",
@@ -237,7 +402,12 @@ def test_normalize_group_ids_preserves_order_and_deduplicates() -> None:
 
 
 def test_extract_forward_payload_preserves_nodes_and_binary_data() -> None:
-    """验证合并转发解析会保留节点身份、消息段和媒体二进制数据。"""
+    """验证合并转发解析同时生成上下文段和发送节点。
+
+    期望解析结果保留 ``forward`` 类型、节点昵称以及图片
+    ``binary_data_base64``。该测试防止消息规范化过程中丢失发送者信息或
+    媒体二进制数据，导致目标群收到不完整内容。
+    """
 
     payload = ForwardMessageParser.extract(build_forward_message())
     assert payload is not None
@@ -248,7 +418,12 @@ def test_extract_forward_payload_preserves_nodes_and_binary_data() -> None:
 
 
 def test_extract_view_forward_results_pairs_tool_call_and_result() -> None:
-    """验证 Planner 历史解析能按 call_id 配对查看调用与完整结果。"""
+    """验证 Planner 历史按工具调用 ID 配对消息 ID 与完整结果。
+
+    assistant 消息声明 ``call-1`` 查看 ``message-1``，tool 消息再引用同一
+    ID。期望返回唯一二元组 ``("message-1", "完整展开内容")``。该测试
+    防止缓存把查看结果关联到错误 source 消息。
+    """
 
     messages = [
         {
@@ -274,7 +449,12 @@ def test_extract_view_forward_results_pairs_tool_call_and_result() -> None:
 
 
 def test_forward_tool_component_is_visible_only_in_group_scope() -> None:
-    """验证公开转发 Tool 的组件元数据只允许群聊调用。"""
+    """验证公开自主转发 Tool 的组件元数据只允许群聊调用。
+
+    期望组件顶层 ``chat_scope`` 为 ``group``，同时保持 ``visibility`` 为
+    ``visible``。该测试防止 SDK 元数据重构后 Tool 被私聊调用，或无法被
+    source Planner 发现。
+    """
 
     plugin = ForwardMessagesAutoPlugin()
     plugin.set_plugin_config({})
@@ -285,7 +465,15 @@ def test_forward_tool_component_is_visible_only_in_group_scope() -> None:
 
 @pytest.mark.asyncio
 async def test_hook_caches_view_result_and_hides_tool_outside_source(tmp_path: Path) -> None:
-    """验证 Hook 在 source 缓存查看结果，并在其他会话隐藏转发 Tool。"""
+    """验证 Hook 仅在 source 缓存结果，并在其他会话隐藏 Tool。
+
+    source 会话应缓存 ``forward-message`` 的完整展开内容且保留全部工具；
+    target 会话应只保留无关的 ``reply`` 工具。该测试防止查看缓存跨会话
+    污染，也防止非白名单群获得自主转发入口。
+
+    Args:
+        tmp_path: pytest 提供的临时数据目录，用于插件加载和卸载状态隔离。
+    """
 
     plugin = build_plugin(tmp_path)
     await plugin.on_load()
@@ -329,7 +517,15 @@ async def test_hook_caches_view_result_and_hides_tool_outside_source(tmp_path: P
 
 @pytest.mark.asyncio
 async def test_tool_sends_targets_in_order_and_deduplicates(tmp_path: Path) -> None:
-    """验证多目标按配置顺序处理，并阻止已完成任务再次发送。"""
+    """验证多目标严格按阶段顺序处理，并对完成任务执行去重。
+
+    首次请求应依次产生 target-a 的 send/context/planner，再处理 target-b，
+    且上下文复用源群缓存。第二次相同请求应返回 ``accepted=False``，发送
+    事件总数保持为二。该测试防止并行或乱序投递、重复媒体读取和重复转发。
+
+    Args:
+        tmp_path: pytest 提供的临时目录，用于检查 ``forward_state.json``。
+    """
 
     plugin = build_plugin(tmp_path)
     await plugin.on_load()
@@ -377,7 +573,15 @@ async def test_tool_sends_targets_in_order_and_deduplicates(tmp_path: Path) -> N
 
 @pytest.mark.asyncio
 async def test_send_failure_skips_context_but_continues_next_target(tmp_path: Path) -> None:
-    """验证某目标发送失败时跳过其后续阶段，但继续处理下一目标。"""
+    """验证单个 target 发送失败不会污染上下文或中断后续 target。
+
+    target-a 模拟物理发送失败，期望不出现其 context/planner 事件；target-b
+    仍应完成 send/context/planner。该测试防止失败消息被错误写入 Maisaka
+    上下文，也防止一个群的故障阻塞整个路由。
+
+    Args:
+        tmp_path: pytest 提供的隔离状态目录。
+    """
 
     plugin = build_plugin(tmp_path, failed_streams={"target-a"})
     await plugin.on_load()
@@ -402,7 +606,16 @@ async def test_send_failure_skips_context_but_continues_next_target(tmp_path: Pa
 
 @pytest.mark.asyncio
 async def test_persisted_stage_resumes_without_sending_again(tmp_path: Path) -> None:
-    """验证重载后从持久化阶段恢复，避免重复发送已经成功的消息。"""
+    """验证插件重载后从持久化阶段继续而不重复物理发送。
+
+    第一个实例让 target-a 发送成功但上下文失败，同时完成 target-b；第二个
+    实例读取同一状态目录后，应只为 target-a 重试 context/planner，不再
+    产生 send 事件。该测试防止进程重启或临时 capability 故障导致群内
+    重复消息。
+
+    Args:
+        tmp_path: 两个插件实例共享的 pytest 临时状态目录。
+    """
 
     first_plugin = build_plugin(tmp_path, failed_context_streams={"target-a"})
     await first_plugin.on_load()
@@ -442,7 +655,15 @@ async def test_persisted_stage_resumes_without_sending_again(tmp_path: Path) -> 
 
 @pytest.mark.asyncio
 async def test_tool_rejects_non_source_group(tmp_path: Path) -> None:
-    """验证非 source 白名单群会在读取消息前被 Tool 拒绝。"""
+    """验证非 source 白名单群在读取消息前即被拒绝。
+
+    请求来自群号 ``99999`` 时，期望返回 ``success=False`` 且错误文本提及
+    source 白名单；消息 capability 调用记录必须为空。该测试防止未授权
+    群通过猜测 ``msg_id`` 触发跨会话消息读取。
+
+    Args:
+        tmp_path: pytest 提供的隔离状态目录。
+    """
 
     plugin = build_plugin(tmp_path)
     await plugin.on_load()

@@ -17,6 +17,16 @@ class TargetStage(IntEnum):
 
     @classmethod
     def from_value(cls, value: str) -> TargetStage:
+        """将持久化阶段字符串转换为枚举值。
+
+        Args:
+            value: 阶段名称，不区分大小写，例如 ``"sent"``。未知值、
+                空值或非字符串兼容值会降级为 ``PENDING``。
+
+        Returns:
+            对应的 ``TargetStage``；无法识别时返回 ``TargetStage.PENDING``。
+        """
+
         try:
             return cls[value.upper()]
         except (KeyError, AttributeError):
@@ -24,6 +34,13 @@ class TargetStage(IntEnum):
 
     @property
     def storage_value(self) -> str:
+        """返回适合写入 JSON 状态文件的小写阶段名称。
+
+        Returns:
+            当前枚举成员的小写名称，例如 ``TargetStage.SENT`` 返回
+            ``"sent"``。
+        """
+
         return self.name.lower()
 
 

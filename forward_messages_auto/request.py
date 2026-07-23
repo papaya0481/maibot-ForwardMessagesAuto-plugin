@@ -25,6 +25,16 @@ class ForwardRequestService:
         state: ForwardStateStore,
         delivery: ForwardDeliveryService,
     ) -> None:
+        """创建负责 Tool 请求前置处理的服务。
+
+        Args:
+            context: MaiBot ``PluginContext``，用于读取源消息和记录日志。
+            config_provider: 返回最新强类型配置的回调。
+            view_cache: 保存源 Planner 已展开内容的共享缓存。
+            state: 提供幂等完成判断的持久化状态存储。
+            delivery: 接收已验证 ``ForwardJob`` 的后台投递服务。
+        """
+
         self._ctx = context
         self._config_provider = config_provider
         self._view_cache = view_cache
@@ -33,6 +43,12 @@ class ForwardRequestService:
 
     @property
     def config(self) -> ForwardMessagesAutoConfig:
+        """读取当前生效的插件配置。
+
+        Returns:
+            配置提供器当前返回的 ``ForwardMessagesAutoConfig``。
+        """
+
         return self._config_provider()
 
     async def create(
@@ -42,6 +58,27 @@ class ForwardRequestService:
         content_summary: str,
         invocation_context: dict[str, Any],
     ) -> dict[str, Any]:
+        """校验转发请求、读取源消息并安排后台任务。
+
+        处理顺序包括调用环境校验、source 消息归属校验、合并转发节点解析、
+        展开内容选择和幂等判断。所有校验通过后仅安排后台任务，不等待各
+        target 实际发送完成。
+
+        Args:
+            msg_id: source Planner 刚通过 ``view_forward_message`` 查看过的
+                合并转发消息 ID。
+            sharing_reason: Planner 对“为何值得分享”的简短说明，可为空。
+            content_summary: 完整查看缓存失效时使用的忠实摘要，可为空。
+            invocation_context: SDK 注入的 Tool 调用上下文。必须提供 QQ
+                ``platform``、``group_id``，以及 ``stream_id`` 或 ``chat_id``。
+
+        Returns:
+            Planner 可读的结果字典。接受新任务时包含 ``success=True``、
+            ``accepted=True``、稳定 ``job_id`` 和 ``target_count``；任务正在
+            处理或已经完成时返回 ``accepted=False``；校验或读取失败时返回
+            ``success=False`` 及中文 ``content``。
+        """
+
         validation = self._validate_invocation(msg_id, invocation_context)
         if isinstance(validation, dict):
             return validation
@@ -110,6 +147,22 @@ class ForwardRequestService:
         msg_id: str,
         invocation_context: dict[str, Any],
     ) -> tuple[str, str, str, list[str]] | dict[str, Any]:
+        """验证 Tool 调用环境并计算本次目标群列表。
+
+        该方法只接受启用状态下、来自 SnowLuma QQ source 白名单群的调用。
+        target 完全由配置决定，并排除与 source 相同的群。
+
+        Args:
+            msg_id: Planner 传入的源消息 ID；去除空白后不能为空。
+            invocation_context: SDK Tool 上下文，读取 ``platform``、
+                ``group_id``、``stream_id`` 和兼容字段 ``chat_id``。
+
+        Returns:
+            校验成功时返回 ``(source_stream_id, source_group_id,
+            source_message_id, target_group_ids)``；失败时返回
+            ``{"success": False, "content": ...}``。
+        """
+
         if not self.config.plugin.enabled:
             return self.failure("自主跨群转发插件当前未启用。")
 
@@ -140,6 +193,21 @@ class ForwardRequestService:
         source_message_id: str,
         source_stream_id: str,
     ) -> dict[str, Any]:
+        """从 Host 获取包含媒体二进制数据的源消息。
+
+        capability 异常、失败返回和消息缺失都会转换成带 ``_failure`` 的内部
+        字典，供 ``create`` 生成稳定的 Planner 错误结果，不向 Tool 调用方
+        暴露堆栈。
+
+        Args:
+            source_message_id: 要读取的 source 消息 ID。
+            source_stream_id: 限制查询范围的 source 聊天流 ID。
+
+        Returns:
+            成功时返回 Host 消息字典；失败时返回
+            ``{"_failure": "中文原因"}``。
+        """
+
         try:
             result = await self._ctx.message.get_by_id(
                 source_message_id,
@@ -167,6 +235,18 @@ class ForwardRequestService:
         source_stream_id: str,
         source_group_id: str,
     ) -> str:
+        """确认查询结果属于当前 QQ source 会话。
+
+        Args:
+            message: Host 返回的源消息字典。
+            source_stream_id: Tool 调用所在的聊天流 ID。
+            source_group_id: Tool 调用所在的 QQ 群号。
+
+        Returns:
+            校验通过返回空字符串；聊天流、群号或平台不匹配时返回可直接
+            展示给 Planner 的中文错误说明。
+        """
+
         if str(message.get("session_id") or "").strip() != source_stream_id:
             return "指定消息不属于当前 source 聊天流。"
         if str(message.get("group_id") or "").strip() != source_group_id:
@@ -182,6 +262,21 @@ class ForwardRequestService:
         content_summary: str,
         message: dict[str, Any],
     ) -> str:
+        """选择写入目标群上下文的可读完整内容。
+
+        优先级为源群查看缓存、Planner 提供的摘要、Host 消息预览，最后使用
+        固定占位文本。后两种降级会记录日志，但不会阻止原始节点发送。
+
+        Args:
+            source_stream_id: 源消息所属聊天流 ID。
+            source_message_id: 源合并转发消息 ID。
+            content_summary: Planner 提供的可选降级摘要。
+            message: Host 源消息，用于读取 ``processed_plain_text`` 预览。
+
+        Returns:
+            非空的目标群可见文本，内容来自上述最高优先级的可用来源。
+        """
+
         expanded_content = self._view_cache.get(
             source_stream_id,
             source_message_id,
@@ -210,6 +305,21 @@ class ForwardRequestService:
         job_id: str,
         target_group_ids: list[str],
     ) -> dict[str, Any] | None:
+        """判断请求是否正在处理或已完成当前路由。
+
+        当目标群 Planner 功能关闭时，以 ``CONTEXT_APPENDED`` 为完成标准；
+        开启时要求所有目标达到 ``PLANNER_QUEUED``。
+
+        Args:
+            state_key: 当前 source 消息与目标路由的稳定幂等键。
+            job_id: 面向日志和 Planner 的短任务 ID。
+            target_group_ids: 当前配置生成的目标 QQ 群列表。
+
+        Returns:
+            重复任务返回 ``accepted=False`` 的成功结果字典；任务尚未活动且
+            未完成时返回 ``None``，表示可以创建新后台任务或恢复未完成阶段。
+        """
+
         if self._delivery.is_active(state_key):
             return {
                 "success": True,
@@ -235,10 +345,33 @@ class ForwardRequestService:
         message_id: str,
         target_group_ids: list[str],
     ) -> str:
+        """生成包含 source 消息和目标路由的稳定幂等键。
+
+        目标群会先去重、排序后参与 SHA-256 摘要，因此仅调整同一目标集合的
+        配置顺序不会产生新任务；增加或删除目标会得到不同键。
+
+        Args:
+            stream_id: source 聊天流 ID。
+            message_id: source 合并转发消息 ID。
+            target_group_ids: 当前任务的目标 QQ 群号列表。
+
+        Returns:
+            ``"<stream_id>:<message_id>:<16位摘要>"`` 格式的状态键。
+        """
+
         route_text = ",".join(sorted(set(target_group_ids)))
         digest = hashlib.sha256(f"{stream_id}\n{message_id}\n{route_text}".encode()).hexdigest()[:16]
         return f"{stream_id}:{message_id}:{digest}"
 
     @staticmethod
     def failure(content: str) -> dict[str, Any]:
+        """构造统一的 Planner 可读失败结果。
+
+        Args:
+            content: 说明拒绝或失败原因的简体中文文本。
+
+        Returns:
+            ``{"success": False, "content": content}`` 字典。
+        """
+
         return {"success": False, "content": content}
