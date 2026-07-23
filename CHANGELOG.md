@@ -6,6 +6,13 @@
 
 ## [Unreleased]
 
+## [0.1.6] - 2026-07-23
+
+### Fixed
+
+- 兼容 SDK 对 `message.get_by_id` 成功响应的自动解包，避免把正常源消息误判为 `success=False` 并返回“未知错误”。
+- 保留旧版成功包装兼容，并在 Host 明确拒绝查询时记录消息 ID、聊天流和响应字段，向 Planner 返回 Host 提供的具体失败原因。
+
 ## [0.1.5] - 2026-07-23
 
 ### Fixed
@@ -61,7 +68,8 @@
 - 新增分阶段持久化状态与幂等恢复，避免后续步骤失败时重复发送。
 - 新增测试，覆盖缓存、白名单、消息节点、顺序投递、失败隔离和去重。
 
-[Unreleased]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.5...HEAD
+[Unreleased]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.6...HEAD
+[0.1.6]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.2...v0.1.3

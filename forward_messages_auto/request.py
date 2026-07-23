@@ -195,9 +195,10 @@ class ForwardRequestService:
     ) -> dict[str, Any]:
         """从 Host 获取包含媒体二进制数据的源消息。
 
-        capability 异常、失败返回和消息缺失都会转换成带 ``_failure`` 的内部
-        字典，供 ``create`` 生成稳定的 Planner 错误结果，不向 Tool 调用方
-        暴露堆栈。
+        当前 SDK 会把成功响应自动解包为消息字典；方法同时兼容旧版 SDK
+        返回的 ``{"success": True, "message": ...}`` 包装。capability 异常、
+        明确失败、消息缺失和格式错误都会转换成带 ``_failure`` 的内部字典，
+        供 ``create`` 生成稳定的 Planner 错误结果，不向 Tool 调用方暴露堆栈。
 
         Args:
             source_message_id: 要读取的 source 消息 ID。
@@ -221,9 +222,30 @@ class ForwardRequestService:
                 exc,
             )
             return {"_failure": "读取源消息失败，暂时无法创建转发任务。"}
-        if not isinstance(result, dict) or not result.get("success", False):
-            error = result.get("error", "未知错误") if isinstance(result, dict) else "返回格式错误"
+        if result is None:
+            return {"_failure": "没有找到指定的源消息。"}
+        if not isinstance(result, dict):
+            self._ctx.logger.warning(
+                "读取源消息返回格式错误: msg_id=%s stream_id=%s actual_type=%s",
+                source_message_id,
+                source_stream_id,
+                type(result).__name__,
+            )
+            return {"_failure": "读取源消息失败：Host 返回格式错误。"}
+
+        if "success" not in result:
+            return result
+        if not result.get("success", False):
+            error = str(result.get("error") or "").strip() or "Host 未提供失败原因"
+            self._ctx.logger.warning(
+                "读取源消息被 Host 拒绝: msg_id=%s stream_id=%s error=%s response_keys=%s",
+                source_message_id,
+                source_stream_id,
+                error,
+                sorted(result),
+            )
             return {"_failure": f"读取源消息失败：{error}"}
+
         message = result.get("message")
         if not isinstance(message, dict):
             return {"_failure": "没有找到指定的源消息。"}

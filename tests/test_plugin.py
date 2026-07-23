@@ -112,7 +112,8 @@ class FakeMessageCapability:
         """创建始终返回指定消息的查询能力替身。
 
         Args:
-            message: 每次 ``get_by_id`` 成功结果中返回的 Host 消息字典。
+            message: 每次 ``get_by_id`` 返回的消息字典，模拟当前 SDK 对
+                Host 成功响应的自动解包。
         """
 
         self.message = message
@@ -126,7 +127,7 @@ class FakeMessageCapability:
         include_binary_data: bool = False,
         **kwargs: Any,
     ) -> dict[str, Any]:
-        """记录消息查询参数并返回预设成功结果。
+        """记录消息查询参数并返回 SDK 解包后的预设消息。
 
         Args:
             message_id: 被查询的消息 ID。
@@ -135,12 +136,50 @@ class FakeMessageCapability:
             **kwargs: 本测试替身忽略的其他 capability 参数。
 
         Returns:
-            ``{"success": True, "message": self.message}``。
+            当前 SDK 解包后的 ``self.message`` 消息字典。
         """
 
         del kwargs
         self.calls.append((message_id, stream_id, include_binary_data))
-        return {"success": True, "message": self.message}
+        return self.message
+
+
+class FakeStaticMessageCapability:
+    def __init__(self, result: Any) -> None:
+        """创建返回任意固定结果的消息能力替身。
+
+        Args:
+            result: ``get_by_id`` 应原样返回的结果，用于覆盖旧版包装、失败
+                包装、空结果和非法格式。
+        """
+
+        self.result = result
+
+    async def get_by_id(
+        self,
+        message_id: str,
+        *,
+        stream_id: str = "",
+        include_binary_data: bool = False,
+        **kwargs: Any,
+    ) -> Any:
+        """返回预设结果并校验请求保留消息范围和二进制数据参数。
+
+        Args:
+            message_id: 被查询的消息 ID，测试要求不能为空。
+            stream_id: source 聊天流 ID，测试要求为 ``source-stream``。
+            include_binary_data: 是否请求媒体二进制字段，测试要求为 ``True``。
+            **kwargs: 本测试替身忽略的其他 capability 参数。
+
+        Returns:
+            构造实例时传入的固定结果。
+        """
+
+        del kwargs
+        assert message_id
+        assert stream_id == "source-stream"
+        assert include_binary_data is True
+        return self.result
 
 
 class FakeChatCapability:
@@ -391,7 +430,7 @@ def build_plugin(
         {
             "plugin": {
                 "enabled": True,
-                "version": "0.1.5",
+                "version": "0.1.6",
                 "config_version": "0.1.1",
             },
             "routing": {
@@ -705,6 +744,92 @@ async def test_tool_sends_targets_in_order_and_deduplicates(tmp_path: Path) -> N
     assert repeated["accepted"] is False
     assert len([event for event in plugin.ctx.events if event[0] == "send"]) == 2
     assert (tmp_path / "forward_state.json").is_file()
+    await plugin.on_unload()
+
+
+@pytest.mark.asyncio
+async def test_source_message_query_accepts_legacy_wrapped_success(tmp_path: Path) -> None:
+    """验证源消息查询仍兼容旧版 SDK 的成功包装结果。
+
+    将消息 capability 替换为返回 ``success/message`` 包装的旧版替身后，
+    Tool 仍应接受任务。该测试防止修复当前 SDK 自动解包格式时破坏旧版
+    Host 或测试环境兼容性。
+
+    Args:
+        tmp_path: pytest 提供的隔离状态目录。
+    """
+
+    plugin = build_plugin(tmp_path)
+    plugin.ctx.message = FakeStaticMessageCapability(
+        {"success": True, "message": build_forward_message()}
+    )
+    await plugin.on_load()
+    result = await plugin.request_cross_group_forward(
+        "forward-message",
+        content_summary="降级摘要",
+        platform="qq",
+        group_id="10001",
+        stream_id="source-stream",
+    )
+    assert result["success"] is True
+    assert result["accepted"] is True
+    await wait_for_background_tasks(plugin)
+    await plugin.on_unload()
+
+
+@pytest.mark.asyncio
+async def test_source_message_query_preserves_host_failure_reason(tmp_path: Path) -> None:
+    """验证 Host 明确失败时向 Planner 保留具体原因。
+
+    capability 返回带 ``error`` 的失败包装后，Tool 应拒绝任务并包含原始
+    错误原因，且不安排发送事件。该测试防止诊断信息再次退化为模糊的
+    “未知错误”。
+
+    Args:
+        tmp_path: pytest 提供的隔离状态目录。
+    """
+
+    plugin = build_plugin(tmp_path)
+    plugin.ctx.message = FakeStaticMessageCapability(
+        {"success": False, "error": "消息不属于指定聊天流"}
+    )
+    await plugin.on_load()
+    result = await plugin.request_cross_group_forward(
+        "forward-message",
+        platform="qq",
+        group_id="10001",
+        stream_id="source-stream",
+    )
+    assert result["success"] is False
+    assert "消息不属于指定聊天流" in result["content"]
+    assert plugin.ctx.events == []
+    await plugin.on_unload()
+
+
+@pytest.mark.asyncio
+async def test_source_message_query_reports_missing_host_error(tmp_path: Path) -> None:
+    """验证 Host 失败响应缺少 error 时返回可操作的稳定说明。
+
+    capability 返回只有 ``success=False`` 的包装后，Tool 应说明 Host 未提供
+    失败原因，而不是误称“未知错误”；同时不得安排发送事件。该测试保护
+    不完整 Host 响应下的诊断质量。
+
+    Args:
+        tmp_path: pytest 提供的隔离状态目录。
+    """
+
+    plugin = build_plugin(tmp_path)
+    plugin.ctx.message = FakeStaticMessageCapability({"success": False})
+    await plugin.on_load()
+    result = await plugin.request_cross_group_forward(
+        "forward-message",
+        platform="qq",
+        group_id="10001",
+        stream_id="source-stream",
+    )
+    assert result["success"] is False
+    assert "Host 未提供失败原因" in result["content"]
+    assert plugin.ctx.events == []
     await plugin.on_unload()
 
 
