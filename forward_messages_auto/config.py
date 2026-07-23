@@ -7,7 +7,7 @@ from typing import Any
 
 from maibot_sdk import Field, PluginConfigBase
 
-PLUGIN_VERSION = "0.1.0"
+PLUGIN_VERSION = "0.1.1"
 CONFIG_VERSION = PLUGIN_VERSION
 
 

@@ -189,8 +189,8 @@ def build_plugin(
         {
             "plugin": {
                 "enabled": True,
-                "version": "0.1.0",
-                "config_version": "0.1.0",
+                "version": "0.1.1",
+                "config_version": "0.1.1",
             },
             "routing": {
                 "source_groups": ["10001"],

@@ -6,6 +6,16 @@
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-07-23
+
+### Changed
+
+- 将配置、领域模型、消息解析、查看结果缓存、聊天流索引、状态持久化、请求校验和后台投递拆分为职责独立的模块。
+- 将 `plugin.py` 收敛为插件入口、生命周期、组件声明和服务装配层。
+- 使用类封装运行时状态与行为，明确各模块之间的单向依赖。
+- 为每项自动化测试补充测试场景和预期行为说明。
+- 新增多文件解耦、面向对象封装和测试说明规范。
+
 ## [0.1.0] - 2026-07-23
 
 ### Added
@@ -21,5 +31,6 @@
 - 新增分阶段持久化状态与幂等恢复，避免后续步骤失败时重复发送。
 - 新增自动化测试，覆盖缓存、白名单、消息节点、顺序投递、失败隔离和去重。
 
-[Unreleased]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/releases/tag/v0.1.0
