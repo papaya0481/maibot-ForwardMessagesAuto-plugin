@@ -9,9 +9,11 @@ from typing import Any
 from .cache import ViewResultCache
 from .config import ForwardMessagesAutoConfig, GroupIdList
 from .delivery import ForwardDeliveryService
-from .models import ForwardJob, TargetStage, ViewCacheStatus
+from .models import ForwardJob, TargetStage, ViewCacheStatus, ViewObservationKind
 from .parsing import ForwardMessageParser
 from .state import ForwardStateStore
+
+EMPTY_CONTENT_FALLBACK_THRESHOLD = 2
 
 
 class ForwardRequestService:
@@ -68,8 +70,8 @@ class ForwardRequestService:
             msg_id: source Planner 刚通过 ``view_forward_message`` 查看过的
                 合并转发消息 ID。
             sharing_reason: Planner 对“为何值得分享”的简短说明，可为空。
-            content_summary: 完整查看缓存确认过期或多次查看失败时使用的忠实
-                摘要，可为空。
+            content_summary: 完整查看缓存确认过期、连续可重试失败达到阈值
+                或连续两次返回空内容时使用的忠实摘要，可为空。
             invocation_context: SDK 注入的 Tool 调用上下文。必须提供 QQ
                 ``platform``、``group_id``，以及 ``stream_id`` 或 ``chat_id``。
 
@@ -289,10 +291,10 @@ class ForwardRequestService:
     ) -> str | dict[str, Any]:
         """选择完整内容，并仅在明确不可推进时允许降级。
 
-        有效缓存始终优先。普通缓存缺失或已知查看失败次数尚未达到配置
-        阈值时会拒绝任务，要求 Planner 重新查看；只有缓存明确过期，或
-        已知失败次数达到配置阈值时，才依次使用 Planner 摘要、Host 消息
-        预览和固定占位文本。
+        有效缓存始终优先。参数或消息错误要求修正，非合并转发和未知错误
+        会阻止任务；可重试故障只有连续次数达到配置阈值才允许降级，空内容
+        则允许一次诊断重试。缓存明确过期也允许依次使用 Planner 摘要、
+        Host 消息预览和固定占位文本。
 
         Args:
             source_stream_id: 源消息所属聊天流 ID。
@@ -313,20 +315,51 @@ class ForwardRequestService:
         if lookup.status is ViewCacheStatus.READY:
             return lookup.content
 
+        observation_kind = lookup.last_observation_kind
+        if observation_kind is ViewObservationKind.TERMINAL_FAILURE:
+            return self.failure(
+                "view_forward_message 已确认该消息不是可展开的合并转发消息；重复查看不会开放降级，请勿创建转发任务。"
+            )
+        if observation_kind is ViewObservationKind.CORRECTABLE_FAILURE:
+            return self.failure(
+                "view_forward_message 返回了可修正的参数或消息错误；"
+                "请检查并修正 msg_id，使用相同错误参数重试不会开放降级。"
+            )
+        if observation_kind is ViewObservationKind.UNKNOWN_FAILURE:
+            return self.failure(
+                "view_forward_message 返回了无法安全分类的失败；为避免误转发，当前不会累计次数或开放降级。"
+            )
+
         failure_threshold = self.config.behavior.view_failure_fallback_threshold
         fallback_reason = ""
         if lookup.status is ViewCacheStatus.EXPIRED:
             fallback_reason = "完整内容缓存已过期"
-        elif lookup.failure_count >= failure_threshold:
-            fallback_reason = f"view_forward_message 已连续失败 {lookup.failure_count} 次"
+        elif (
+            observation_kind is ViewObservationKind.RETRYABLE_FAILURE
+            and lookup.retryable_failure_count >= failure_threshold
+        ):
+            fallback_reason = f"view_forward_message 已连续发生 {lookup.retryable_failure_count} 次可重试故障"
+        elif (
+            observation_kind is ViewObservationKind.EMPTY_CONTENT_FAILURE
+            and lookup.empty_content_failure_count >= EMPTY_CONTENT_FALLBACK_THRESHOLD
+        ):
+            fallback_reason = f"view_forward_message 已连续 {lookup.empty_content_failure_count} 次返回空内容"
 
         if not fallback_reason:
-            retry_detail = (
-                f"当前记录到 {lookup.failure_count} 次 view_forward_message 失败，"
-                f"尚未达到允许降级的配置阈值 {failure_threshold} 次；请再次查看，成功后再重试转发。"
-                if lookup.failure_count
-                else "尚未取得成功的 view_forward_message 完整内容，请先完成查看后再重试转发。"
-            )
+            if observation_kind is ViewObservationKind.RETRYABLE_FAILURE:
+                retry_detail = (
+                    "当前连续记录到 "
+                    f"{lookup.retryable_failure_count} 次 view_forward_message 可重试故障，"
+                    f"尚未达到允许降级的配置阈值 {failure_threshold} 次；"
+                    "请再次查看，成功后再重试转发。"
+                )
+            elif observation_kind is ViewObservationKind.EMPTY_CONTENT_FAILURE:
+                retry_detail = (
+                    "view_forward_message 首次返回空内容；请再进行一次诊断查看。"
+                    "若仍为空，插件才允许使用摘要或消息预览降级。"
+                )
+            else:
+                retry_detail = "尚未取得成功的 view_forward_message 完整内容，请先完成查看后再重试转发。"
             return self.failure(retry_detail)
 
         expanded_content = str(content_summary or "").strip()

@@ -135,8 +135,9 @@ class ForwardingRuntime:
         """从 Planner 历史登记新的查看结果并缓存成功内容。
 
         每个 ``tool_call_id`` 在同一聊天流中只处理一次，避免历史结果在
-        后续 Planner 请求中反复刷新 TTL。已知失败结果仅累计次数，成功
-        结果才写入缓存，并登记为等待 Planner 立即判断的消息。
+        后续 Planner 请求中反复刷新 TTL。失败结果按可重试、空内容、
+        可修正、终止和未知类型保存状态，成功结果才写入缓存，并登记为
+        等待 Planner 立即判断的消息。
 
         Args:
             session_id: source Planner 当前聊天流 ID。
@@ -154,7 +155,7 @@ class ForwardingRuntime:
                 observation.call_id,
                 observation.message_id,
                 observation.content,
-                failed=observation.failed,
+                kind=observation.kind,
             )
             if is_fresh_success:
                 fresh_message_ids.append(observation.message_id)
@@ -211,8 +212,8 @@ class ForwardingRuntime:
         Args:
             msg_id: source Planner 已完整查看的合并转发消息 ID。
             sharing_reason: Planner 给出的分享理由，可为空。
-            content_summary: 缓存确认过期或查看失败达到配置阈值时使用的
-                忠实摘要，可为空。
+            content_summary: 缓存确认过期、连续可重试故障达到配置阈值或
+                连续两次返回空内容时使用的忠实摘要，可为空。
             invocation_context: SDK 注入的调用上下文；请求服务读取
                 ``platform``、``group_id``、``stream_id`` 或 ``chat_id``。
 

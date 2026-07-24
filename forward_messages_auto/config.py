@@ -7,8 +7,8 @@ from typing import Any
 
 from maibot_sdk import Field, PluginConfigBase
 
-PLUGIN_VERSION = "0.1.10"
-CONFIG_VERSION = "0.1.2"
+PLUGIN_VERSION = "0.1.11"
+CONFIG_VERSION = "0.1.3"
 
 
 class GroupIdList:
@@ -86,7 +86,7 @@ class BehaviorConfig(PluginConfigBase):
     view_failure_fallback_threshold: int = Field(
         default=2,
         ge=1,
-        description="允许降级前 view_forward_message 的连续失败次数",
+        description="允许降级前 view_forward_message 的连续可重试故障次数",
     )
     dedupe_ttl_seconds: int = Field(
         default=604800,

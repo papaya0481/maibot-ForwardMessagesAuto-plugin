@@ -60,13 +60,37 @@ class ViewCacheStatus(str, Enum):
     EXPIRED = "expired"
 
 
+class ViewObservationKind(str, Enum):
+    """一次 view_forward_message 结果的语义分类。"""
+
+    SUCCESS = "success"
+    RETRYABLE_FAILURE = "retryable_failure"
+    EMPTY_CONTENT_FAILURE = "empty_content_failure"
+    CORRECTABLE_FAILURE = "correctable_failure"
+    TERMINAL_FAILURE = "terminal_failure"
+    UNKNOWN_FAILURE = "unknown_failure"
+
+
+@dataclass(slots=True)
+class ViewFailureState:
+    """同一消息最近一段连续查看失败的分类状态。"""
+
+    retryable_count: int = 0
+    empty_content_count: int = 0
+    last_kind: ViewObservationKind | None = None
+    last_content: str = ""
+
+
 @dataclass(frozen=True, slots=True)
 class ViewCacheLookup:
     """一次完整查看缓存查询结果。"""
 
     status: ViewCacheStatus
     content: str
-    failure_count: int
+    retryable_failure_count: int
+    empty_content_failure_count: int
+    last_observation_kind: ViewObservationKind | None
+    last_failure_content: str
 
 
 @dataclass(slots=True)

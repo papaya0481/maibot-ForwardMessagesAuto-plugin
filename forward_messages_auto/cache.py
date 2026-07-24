@@ -5,7 +5,13 @@ from __future__ import annotations
 from collections import OrderedDict
 import time
 
-from .models import ViewCacheEntry, ViewCacheLookup, ViewCacheStatus
+from .models import (
+    ViewCacheEntry,
+    ViewCacheLookup,
+    ViewCacheStatus,
+    ViewFailureState,
+    ViewObservationKind,
+)
 
 MAX_PROCESSED_VIEW_CALLS = 4096
 
@@ -22,7 +28,7 @@ class ViewResultCache:
 
         self._entries: dict[tuple[str, str], ViewCacheEntry] = {}
         self._expired_keys: set[tuple[str, str]] = set()
-        self._failure_counts: dict[tuple[str, str], int] = {}
+        self._failure_states: dict[tuple[str, str], ViewFailureState] = {}
         self._processed_calls: OrderedDict[tuple[str, str], None] = OrderedDict()
 
     def put(self, stream_id: str, message_id: str, content: str, *, now: float | None = None) -> None:
@@ -40,7 +46,7 @@ class ViewResultCache:
             cached_at=now if now is not None else time.time(),
         )
         self._expired_keys.discard((stream_id, message_id))
-        self._failure_counts.pop((stream_id, message_id), None)
+        self._failure_states.pop((stream_id, message_id), None)
 
     def record_observation(
         self,
@@ -49,21 +55,23 @@ class ViewResultCache:
         message_id: str,
         content: str,
         *,
-        failed: bool,
+        kind: ViewObservationKind,
         now: float | None = None,
     ) -> bool:
-        """只处理一次查看调用，并更新成功缓存或连续失败次数。
+        """只处理一次查看调用，并更新成功缓存或分类失败状态。
 
         已处理的 ``call_id`` 不会再次刷新缓存时间或累计失败。成功结果会
-        写入完整内容并清除此前失败状态；失败结果只增加计数，不会覆盖仍然
-        有效的成功缓存。调用 ID 使用有界集合保存，避免长期运行无限增长。
+        写入完整内容并清除此前失败状态；可重试故障和空内容分别累计连续
+        次数，其他故障只保存最近分类。不同失败分类会中断之前的连续计数，
+        且所有失败都不会覆盖仍然有效的成功缓存。调用 ID 使用有界集合
+        保存，避免长期运行无限增长。
 
         Args:
             stream_id: 发起查看调用的源聊天流 ID。
             call_id: Planner 工具调用 ID，在同一聊天流内用于去重。
             message_id: 被查看的合并转发消息 ID。
             content: ToolResult 的非空文本；成功时作为完整内容缓存。
-            failed: 当前插件根据已知 Host 失败文案判断出的失败标记。
+            kind: 当前插件根据已知 Host 结果文案判断出的语义分类。
             now: 可选 Unix 时间戳。省略时使用当前时间。
 
         Returns:
@@ -80,13 +88,23 @@ class ViewResultCache:
         while len(self._processed_calls) > MAX_PROCESSED_VIEW_CALLS:
             self._processed_calls.popitem(last=False)
 
-        cache_key = (stream_id, message_id)
-        if failed:
-            self._failure_counts[cache_key] = self._failure_counts.get(cache_key, 0) + 1
-            return False
+        if kind is ViewObservationKind.SUCCESS:
+            self.put(stream_id, message_id, content, now=now)
+            return True
 
-        self.put(stream_id, message_id, content, now=now)
-        return True
+        cache_key = (stream_id, message_id)
+        previous = self._failure_states.get(cache_key)
+        state = ViewFailureState(last_kind=kind, last_content=content)
+        if kind is ViewObservationKind.RETRYABLE_FAILURE:
+            state.retryable_count = (
+                previous.retryable_count + 1 if previous is not None and previous.last_kind is kind else 1
+            )
+        elif kind is ViewObservationKind.EMPTY_CONTENT_FAILURE:
+            state.empty_content_count = (
+                previous.empty_content_count + 1 if previous is not None and previous.last_kind is kind else 1
+            )
+        self._failure_states[cache_key] = state
+        return False
 
     def get(self, stream_id: str, message_id: str, ttl_seconds: int) -> str:
         """读取仍在有效期内的完整查看内容。
@@ -110,7 +128,7 @@ class ViewResultCache:
         return self.lookup(stream_id, message_id, ttl_seconds).content
 
     def lookup(self, stream_id: str, message_id: str, ttl_seconds: int) -> ViewCacheLookup:
-        """读取完整内容、过期状态和已知连续失败次数。
+        """读取完整内容、过期状态和分类失败状态。
 
         Args:
             stream_id: 源群对应的 MaiBot 聊天流 ID。
@@ -120,23 +138,30 @@ class ViewResultCache:
         Returns:
             ``ViewCacheLookup``。有效缓存返回 ``READY`` 和完整内容；曾经
             成功但已过期返回 ``EXPIRED``；从未成功缓存返回 ``MISSING``。
-            三种状态都会携带当前已知的连续失败次数。
+            三种状态都会携带最近失败分类及对应的连续计数。
         """
 
         self.cleanup(ttl_seconds)
         key = (stream_id, message_id)
+        failure_state = self._failure_states.get(key, ViewFailureState())
         entry = self._entries.get(key)
         if entry is not None:
             return ViewCacheLookup(
                 status=ViewCacheStatus.READY,
                 content=entry.content,
-                failure_count=self._failure_counts.get(key, 0),
+                retryable_failure_count=failure_state.retryable_count,
+                empty_content_failure_count=failure_state.empty_content_count,
+                last_observation_kind=failure_state.last_kind,
+                last_failure_content=failure_state.last_content,
             )
         status = ViewCacheStatus.EXPIRED if key in self._expired_keys else ViewCacheStatus.MISSING
         return ViewCacheLookup(
             status=status,
             content="",
-            failure_count=self._failure_counts.get(key, 0),
+            retryable_failure_count=failure_state.retryable_count,
+            empty_content_failure_count=failure_state.empty_content_count,
+            last_observation_kind=failure_state.last_kind,
+            last_failure_content=failure_state.last_content,
         )
 
     def cleanup(self, ttl_seconds: int, *, now: float | None = None) -> None:

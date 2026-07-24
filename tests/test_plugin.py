@@ -14,7 +14,7 @@ import pytest
 from forward_messages_auto.cache import ViewResultCache
 from forward_messages_auto.config import GroupIdList
 from forward_messages_auto.config_recovery import LastKnownGoodConfig
-from forward_messages_auto.models import ViewCacheStatus
+from forward_messages_auto.models import ViewCacheStatus, ViewObservationKind
 from forward_messages_auto.parsing import ForwardMessageParser, PlannerHistoryParser
 from forward_messages_auto.runtime import FORWARD_TOOL_NAME
 from forward_messages_auto.streams import GroupStreamRegistry
@@ -412,7 +412,7 @@ def build_plugin(
         failed_streams: 应由发送能力模拟失败的目标聊天流集合。
         failed_context_streams: 应由上下文能力模拟失败的目标聊天流集合。
         view_failure_fallback_threshold: 允许摘要或预览降级前，同一消息需要
-            累计的查看失败次数。
+            连续累计的可重试查看故障次数。
 
     Returns:
         已注入强类型配置和 ``FakeContext``、但尚未调用 ``on_load`` 的插件。
@@ -423,8 +423,8 @@ def build_plugin(
         {
             "plugin": {
                 "enabled": True,
-                "version": "0.1.10",
-                "config_version": "0.1.2",
+                "version": "0.1.11",
+                "config_version": "0.1.3",
             },
             "routing": {
                 "source_groups": ["10001"],
@@ -614,12 +614,44 @@ def test_extract_view_forward_results_pairs_tool_call_and_result() -> None:
     assert PlannerHistoryParser.extract_view_results(messages) == [("message-1", "完整展开内容")]
 
 
-def test_view_result_parser_marks_known_host_failure_without_caching_it() -> None:
-    """验证已知 Host 失败文本会被识别为失败而不是完整查看内容。
+@pytest.mark.parametrize(
+    ("content", "expected_kind"),
+    [
+        (
+            "未找到目标转发消息，msg_id=missing",
+            ViewObservationKind.CORRECTABLE_FAILURE,
+        ),
+        (
+            "目标消息不是可展开查看的转发消息，msg_id=plain",
+            ViewObservationKind.TERMINAL_FAILURE,
+        ),
+        (
+            "查看转发消息完整内容时发生异常。",
+            ViewObservationKind.RETRYABLE_FAILURE,
+        ),
+        (
+            "转发消息内容为空，msg_id=empty",
+            ViewObservationKind.EMPTY_CONTENT_FAILURE,
+        ),
+        (
+            "工具 view_forward_message 执行失败。",
+            ViewObservationKind.UNKNOWN_FAILURE,
+        ),
+    ],
+)
+def test_view_result_parser_classifies_known_host_failures(
+    content: str,
+    expected_kind: ViewObservationKind,
+) -> None:
+    """验证已知 Host 失败文本会被分类而不是缓存为完整内容。
 
-    同一个 ``view_forward_message`` 调用返回“查看时发生异常”后，观察结果
-    应保留调用和消息 ID 并标记 ``failed=True``，成功结果接口则返回空列表。
-    该测试防止错误文本被写入目标群上下文。
+    每种稳定错误前缀都应映射为可修正、终止、可重试、空内容或未知失败，
+    同时成功结果接口返回空列表。该测试防止错误文本写入目标群上下文，也
+    防止不可恢复错误被误计入可重试阈值。
+
+    Args:
+        content: pytest 参数化提供的 Host ToolResult 文本。
+        expected_kind: pytest 参数化提供的预期失败分类。
     """
 
     messages = [
@@ -638,7 +670,7 @@ def test_view_result_parser_marks_known_host_failure_without_caching_it() -> Non
         },
         {
             "role": "tool",
-            "content": "查看转发消息完整内容时发生异常。",
+            "content": content,
             "tool_call_id": "failed-call",
         },
     ]
@@ -647,16 +679,17 @@ def test_view_result_parser_marks_known_host_failure_without_caching_it() -> Non
     assert len(observations) == 1
     assert observations[0].call_id == "failed-call"
     assert observations[0].message_id == "message-1"
-    assert observations[0].failed is True
+    assert observations[0].kind is expected_kind
     assert PlannerHistoryParser.extract_view_results(messages) == []
 
 
-def test_view_cache_deduplicates_calls_and_preserves_real_expiry() -> None:
-    """验证历史重扫不会刷新 TTL，且不同失败调用会独立累计。
+def test_view_cache_deduplicates_calls_and_preserves_classified_failure_state() -> None:
+    """验证历史重扫不刷新 TTL，且只连续累计同类可重试故障。
 
     同一成功 ``call_id`` 在较晚时间重复登记后，缓存仍应按首次捕获时间
-    过期；另一个消息的两个不同失败调用应累计为两次。该测试防止历史结果
-    无限续期，也确保只有“多次失败”能够满足后续降级门槛。
+    过期；另一个消息的两个不同可重试调用应累计为两次，再出现可修正错误
+    时计数应清零。该测试防止历史结果无限续期，也防止不同错误类型拼接成
+    降级资格。
     """
 
     cache = ViewResultCache()
@@ -665,7 +698,7 @@ def test_view_cache_deduplicates_calls_and_preserves_real_expiry() -> None:
         "success-call",
         "message-1",
         "完整内容",
-        failed=False,
+        kind=ViewObservationKind.SUCCESS,
         now=100.0,
     )
     assert not cache.record_observation(
@@ -673,17 +706,40 @@ def test_view_cache_deduplicates_calls_and_preserves_real_expiry() -> None:
         "success-call",
         "message-1",
         "完整内容",
-        failed=False,
+        kind=ViewObservationKind.SUCCESS,
         now=1000.0,
     )
     cache.cleanup(60, now=161.0)
     assert cache.lookup("stream-1", "message-1", 60).status is ViewCacheStatus.EXPIRED
 
-    cache.record_observation("stream-1", "failure-1", "message-2", "失败", failed=True)
-    cache.record_observation("stream-1", "failure-2", "message-2", "失败", failed=True)
+    cache.record_observation(
+        "stream-1",
+        "failure-1",
+        "message-2",
+        "查看异常",
+        kind=ViewObservationKind.RETRYABLE_FAILURE,
+    )
+    cache.record_observation(
+        "stream-1",
+        "failure-2",
+        "message-2",
+        "查看异常",
+        kind=ViewObservationKind.RETRYABLE_FAILURE,
+    )
     failed_lookup = cache.lookup("stream-1", "message-2", 60)
     assert failed_lookup.status is ViewCacheStatus.MISSING
-    assert failed_lookup.failure_count == 2
+    assert failed_lookup.retryable_failure_count == 2
+
+    cache.record_observation(
+        "stream-1",
+        "failure-3",
+        "message-2",
+        "消息不存在",
+        kind=ViewObservationKind.CORRECTABLE_FAILURE,
+    )
+    corrected_lookup = cache.lookup("stream-1", "message-2", 60)
+    assert corrected_lookup.retryable_failure_count == 0
+    assert corrected_lookup.last_observation_kind is ViewObservationKind.CORRECTABLE_FAILURE
 
 
 def test_forward_tool_component_is_deferred_and_group_scoped() -> None:
@@ -841,7 +897,7 @@ async def test_tool_rejects_unviewed_and_single_failure_before_fallback(tmp_path
         "failure-1",
         "forward-message",
         "查看转发消息完整内容时发生异常。",
-        failed=True,
+        kind=ViewObservationKind.RETRYABLE_FAILURE,
     )
     first_failure_result = await plugin.request_cross_group_forward(
         "forward-message",
@@ -859,7 +915,7 @@ async def test_tool_rejects_unviewed_and_single_failure_before_fallback(tmp_path
         "failure-2",
         "forward-message",
         "查看转发消息完整内容时发生异常。",
-        failed=True,
+        kind=ViewObservationKind.RETRYABLE_FAILURE,
     )
     fallback_result = await plugin.request_cross_group_forward(
         "forward-message",
@@ -894,7 +950,7 @@ async def test_tool_uses_configured_view_failure_fallback_threshold(tmp_path: Pa
             f"failure-{failure_index}",
             "forward-message",
             "查看转发消息完整内容时发生异常。",
-            failed=True,
+            kind=ViewObservationKind.RETRYABLE_FAILURE,
         )
 
     before_threshold = await plugin.request_cross_group_forward(
@@ -913,7 +969,7 @@ async def test_tool_uses_configured_view_failure_fallback_threshold(tmp_path: Pa
         "failure-3",
         "forward-message",
         "查看转发消息完整内容时发生异常。",
-        failed=True,
+        kind=ViewObservationKind.RETRYABLE_FAILURE,
     )
     at_threshold = await plugin.request_cross_group_forward(
         "forward-message",
@@ -926,6 +982,113 @@ async def test_tool_uses_configured_view_failure_fallback_threshold(tmp_path: Pa
     assert at_threshold["accepted"] is True
     await wait_for_background_tasks(plugin)
     assert "三次失败后的降级摘要" in plugin.ctx.maisaka.context.visible_text_by_stream["target-a"]
+    await plugin.on_unload()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("failure_kind", "expected_text"),
+    [
+        (ViewObservationKind.CORRECTABLE_FAILURE, "请检查并修正 msg_id"),
+        (ViewObservationKind.TERMINAL_FAILURE, "不是可展开的合并转发消息"),
+        (ViewObservationKind.UNKNOWN_FAILURE, "不会累计次数或开放降级"),
+    ],
+)
+async def test_non_retryable_failures_never_unlock_fallback(
+    tmp_path: Path,
+    failure_kind: ViewObservationKind,
+    expected_text: str,
+) -> None:
+    """验证重复的可修正、终止和未知失败都不会获得降级资格。
+
+    同一消息连续登记三次指定失败后，即使 Planner 提供摘要，Tool 仍应拒绝
+    创建任务并返回对应处理建议。该测试防止无效 msg_id、普通消息或无法
+    分类的错误通过机械重试越过安全边界。
+
+    Args:
+        tmp_path: pytest 提供的隔离状态目录，用于运行真实请求服务。
+        failure_kind: pytest 参数化提供的非重试型失败分类。
+        expected_text: 预期出现在 Tool 拒绝结果中的分类说明。
+    """
+
+    plugin = build_plugin(tmp_path)
+    await plugin.on_load()
+    for failure_index in range(1, 4):
+        plugin.runtime.view_cache.record_observation(
+            "source-stream",
+            f"non-retryable-{failure_index}",
+            "forward-message",
+            "分类失败",
+            kind=failure_kind,
+        )
+
+    result = await plugin.request_cross_group_forward(
+        "forward-message",
+        content_summary="不应使用的摘要",
+        platform="qq",
+        group_id="10001",
+        stream_id="source-stream",
+    )
+
+    assert result["success"] is False
+    assert expected_text in result["content"]
+    assert plugin.ctx.events == []
+    await plugin.on_unload()
+
+
+@pytest.mark.asyncio
+async def test_empty_view_content_allows_one_diagnostic_retry_before_fallback(
+    tmp_path: Path,
+) -> None:
+    """验证空内容需连续出现两次才允许降级。
+
+    首次空内容应要求 Planner 再诊断查看一次，第二个独立调用仍为空时才接受
+    摘要并创建任务。该测试防止偶发空结果立即降低上下文质量，同时避免持续
+    空内容无限阻塞转发。
+
+    Args:
+        tmp_path: pytest 提供的隔离状态目录，用于运行真实请求和后台投递。
+    """
+
+    plugin = build_plugin(tmp_path)
+    await plugin.on_load()
+    plugin.runtime.view_cache.record_observation(
+        "source-stream",
+        "empty-1",
+        "forward-message",
+        "转发消息内容为空，msg_id=forward-message",
+        kind=ViewObservationKind.EMPTY_CONTENT_FAILURE,
+    )
+
+    first_result = await plugin.request_cross_group_forward(
+        "forward-message",
+        content_summary="首次不应使用的摘要",
+        platform="qq",
+        group_id="10001",
+        stream_id="source-stream",
+    )
+    assert first_result["success"] is False
+    assert "再进行一次诊断查看" in first_result["content"]
+
+    plugin.runtime.view_cache.record_observation(
+        "source-stream",
+        "empty-2",
+        "forward-message",
+        "转发消息内容为空，msg_id=forward-message",
+        kind=ViewObservationKind.EMPTY_CONTENT_FAILURE,
+    )
+    second_result = await plugin.request_cross_group_forward(
+        "forward-message",
+        content_summary="连续空内容后的降级摘要",
+        platform="qq",
+        group_id="10001",
+        stream_id="source-stream",
+    )
+
+    assert second_result["success"] is True
+    assert second_result["accepted"] is True
+    await wait_for_background_tasks(plugin)
+    assert "连续空内容后的降级摘要" in plugin.ctx.maisaka.context.visible_text_by_stream["target-a"]
     await plugin.on_unload()
 
 

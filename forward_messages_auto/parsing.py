@@ -5,19 +5,23 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from .models import ViewObservationKind
+
 VIEW_FORWARD_TOOL_NAME = "view_forward_message"
-VIEW_FORWARD_FAILURE_PREFIXES = (
+VIEW_FORWARD_CORRECTABLE_FAILURE_PREFIXES = (
     "查看转发消息工具需要提供有效的 `msg_id` 参数。",
     "未找到目标转发消息，msg_id=",
-    "目标消息不是可展开查看的转发消息，msg_id=",
+)
+VIEW_FORWARD_TERMINAL_FAILURE_PREFIXES = ("目标消息不是可展开查看的转发消息，msg_id=",)
+VIEW_FORWARD_RETRYABLE_FAILURE_PREFIXES = (
     "查看转发消息完整内容时发生异常。",
-    "转发消息内容为空，msg_id=",
     "工具 view_forward_message 调用失败：",
     "未找到工具：view_forward_message",
     "未找到内置工具处理器：view_forward_message",
     "统一工具注册表尚未初始化。",
-    "工具 view_forward_message 执行失败。",
 )
+VIEW_FORWARD_EMPTY_CONTENT_FAILURE_PREFIXES = ("转发消息内容为空，msg_id=",)
+VIEW_FORWARD_UNKNOWN_FAILURE_PREFIXES = ("工具 view_forward_message 执行失败。",)
 
 
 @dataclass(frozen=True, slots=True)
@@ -27,7 +31,7 @@ class ViewToolObservation:
     call_id: str
     message_id: str
     content: str
-    failed: bool
+    kind: ViewObservationKind
 
 
 class ForwardMessageParser:
@@ -162,16 +166,16 @@ class PlannerHistoryParser:
         return [
             (observation.message_id, observation.content)
             for observation in PlannerHistoryParser.extract_view_observations(messages)
-            if not observation.failed
+            if observation.kind is ViewObservationKind.SUCCESS
         ]
 
     @staticmethod
     def extract_view_observations(messages: Any) -> list[ViewToolObservation]:
-        """提取查看调用、结果文本和插件可识别的失败状态。
+        """提取查看调用、结果文本和插件可识别的结果分类。
 
         当前 Host 的 ``before_request`` Hook 不提供 ToolResult ``success``
-        字段，因此失败状态暂时通过内置工具和统一注册表的稳定错误前缀判断。
-        未命中已知失败前缀的非空结果按成功处理。
+        字段，因此结果分类暂时通过内置工具和统一注册表的稳定错误前缀
+        判断。未命中已知失败前缀的非空结果按成功处理。
 
         Args:
             messages: Planner 请求中的 OpenAI 兼容消息字典列表。
@@ -254,6 +258,30 @@ class PlannerHistoryParser:
                     call_id=call_id,
                     message_id=message_id,
                     content=normalized_content,
-                    failed=normalized_content.startswith(VIEW_FORWARD_FAILURE_PREFIXES),
+                    kind=PlannerHistoryParser._classify_view_result(normalized_content),
                 )
             )
+
+    @staticmethod
+    def _classify_view_result(content: str) -> ViewObservationKind:
+        """根据当前 Host 的稳定文本前缀分类查看结果。
+
+        Args:
+            content: 已去除首尾空白的非空 ToolResult 文本。
+
+        Returns:
+            对应的 ``ViewObservationKind``。未匹配任何已知失败前缀时返回
+            ``SUCCESS``，因为当前 Hook 无法读取 ToolResult 的成功标志。
+        """
+
+        if content.startswith(VIEW_FORWARD_CORRECTABLE_FAILURE_PREFIXES):
+            return ViewObservationKind.CORRECTABLE_FAILURE
+        if content.startswith(VIEW_FORWARD_TERMINAL_FAILURE_PREFIXES):
+            return ViewObservationKind.TERMINAL_FAILURE
+        if content.startswith(VIEW_FORWARD_RETRYABLE_FAILURE_PREFIXES):
+            return ViewObservationKind.RETRYABLE_FAILURE
+        if content.startswith(VIEW_FORWARD_EMPTY_CONTENT_FAILURE_PREFIXES):
+            return ViewObservationKind.EMPTY_CONTENT_FAILURE
+        if content.startswith(VIEW_FORWARD_UNKNOWN_FAILURE_PREFIXES):
+            return ViewObservationKind.UNKNOWN_FAILURE
+        return ViewObservationKind.SUCCESS

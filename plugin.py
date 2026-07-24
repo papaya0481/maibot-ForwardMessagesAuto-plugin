@@ -263,7 +263,8 @@ class ForwardMessagesAutoPlugin(MaiBotPlugin):
         ),
         detailed_description=(
             "仅在你已经成功调用 view_forward_message 查看 msg_id 的全部内容，并自主判断值得分享时调用。"
-            "目标群由插件白名单决定，禁止自行指定目标群。content_summary 只在完整内容确认过期或查看失败达到配置阈值时降级使用。"
+            "目标群由插件白名单决定，禁止自行指定目标群。content_summary 只在完整内容确认过期、"
+            "连续可重试故障达到配置阈值或连续两次返回空内容时降级使用。"
         ),
         parameters=[
             ToolParameterInfo(
@@ -282,7 +283,10 @@ class ForwardMessagesAutoPlugin(MaiBotPlugin):
             ToolParameterInfo(
                 name="content_summary",
                 param_type=ToolParamType.STRING,
-                description="对完整转发内容的忠实摘要，仅在缓存确认过期或查看失败达到配置阈值时降级使用",
+                description=(
+                    "对完整转发内容的忠实摘要，仅在缓存确认过期、连续可重试故障达到配置阈值"
+                    "或连续两次返回空内容时降级使用"
+                ),
                 required=False,
                 default="",
             ),
@@ -306,8 +310,8 @@ class ForwardMessagesAutoPlugin(MaiBotPlugin):
         Args:
             msg_id: 刚通过 ``view_forward_message`` 查看过的源消息 ID。
             sharing_reason: Planner 判断内容值得分享的简短理由。
-            content_summary: 查看缓存确认过期或失败达到配置阈值时使用的忠实
-                摘要。
+            content_summary: 查看缓存确认过期、连续可重试故障达到配置阈值
+                或连续两次返回空内容时使用的忠实摘要。
             **kwargs: SDK 注入的 Tool 上下文。必须能解析 QQ ``platform``、
                 ``group_id`` 和 ``stream_id`` 或 ``chat_id``。
 

@@ -6,6 +6,19 @@
 
 ## [Unreleased]
 
+## [0.1.11] - 2026-07-24
+
+### Changed
+
+- 将 `view_forward_message` 失败区分为可重试、空内容、可修正、终止和未知类型，仅连续可重试故障受配置阈值控制。
+- 空内容改为独立的一次诊断重试策略；连续第二次仍为空时才允许摘要或预览降级。
+- `behavior.view_failure_fallback_threshold` 语义收窄为“连续可重试故障次数”，配置版本提升至 `0.1.3`。
+
+### Fixed
+
+- 阻止无效参数、消息不存在、非合并转发和未知失败通过重复调用错误获得降级资格。
+- 不同失败类型会中断此前的连续计数，避免不相关故障被拼接为降级条件。
+
 ## [0.1.10] - 2026-07-24
 
 ### Added
@@ -107,7 +120,8 @@
 - 新增分阶段持久化状态与幂等恢复，避免后续步骤失败时重复发送。
 - 新增测试，覆盖缓存、白名单、消息节点、顺序投递、失败隔离和去重。
 
-[Unreleased]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.10...HEAD
+[Unreleased]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.11...HEAD
+[0.1.11]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.10...v0.1.11
 [0.1.10]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.9...v0.1.10
 [0.1.9]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.8...v0.1.9
 [0.1.8]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.7...v0.1.8
