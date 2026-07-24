@@ -693,6 +693,8 @@ def test_extract_view_forward_results_pairs_tool_call_and_result() -> None:
             "转发消息内容为空，msg_id=empty",
             ViewObservationKind.EMPTY_CONTENT_FAILURE,
         ),
+        ("", ViewObservationKind.EMPTY_CONTENT_FAILURE),
+        (" \n ", ViewObservationKind.EMPTY_CONTENT_FAILURE),
         (
             "工具 view_forward_message 执行失败。",
             ViewObservationKind.UNKNOWN_FAILURE,
@@ -705,9 +707,9 @@ def test_view_result_parser_classifies_known_host_failures(
 ) -> None:
     """验证已知 Host 失败文本会被分类而不是登记为完整内容。
 
-    每种稳定错误前缀都应映射为可修正、终止、可重试、空内容或未知失败，
-    同时成功结果接口返回空列表。该测试防止错误文本写入目标群上下文，也
-    防止不可恢复错误被误计入可重试阈值。
+    每种稳定错误前缀以及原始空白结果都应映射为可修正、终止、可重试、
+    空内容或未知失败，同时成功结果接口返回空列表。该测试防止错误文本
+    写入目标群上下文，也防止空结果被遗漏或不可恢复错误被误计入阈值。
 
     Args:
         content: pytest 参数化提供的 Host ToolResult 文本。
@@ -741,6 +743,56 @@ def test_view_result_parser_classifies_known_host_failures(
     assert observations[0].message_id == "message-1"
     assert observations[0].kind is expected_kind
     assert PlannerHistoryParser.extract_view_results(messages) == []
+
+
+def test_empty_raw_view_results_reach_fallback_counter() -> None:
+    """验证连续原始空结果会进入查看资格的空内容降级计数。
+
+    两个独立 ``view_forward_message`` 调用分别返回空字符串和纯空白文本时，
+    解析器应保留两条空内容失败，资格存储应得到连续计数 ``2``。该测试防止
+    解析层再次丢弃空结果，导致既定的第二次空内容降级永远无法触发。
+    """
+
+    messages = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": f"empty-call-{index}",
+                    "function": {
+                        "name": "view_forward_message",
+                        "arguments": {"msg_id": "message-1"},
+                    },
+                }
+            ],
+        }
+        for index in range(2)
+    ]
+    messages.insert(
+        1,
+        {
+            "role": "tool",
+            "content": "",
+            "tool_call_id": "empty-call-0",
+        },
+    )
+    messages.append(
+        {
+            "role": "tool",
+            "content": " \n ",
+            "tool_call_id": "empty-call-1",
+        }
+    )
+
+    observations = PlannerHistoryParser.extract_view_observations(messages)
+    store = ViewEligibilityStore()
+    store.sync_context("stream-1", observations)
+
+    lookup = store.lookup("stream-1", "message-1")
+    assert len(observations) == 2
+    assert all(item.kind is ViewObservationKind.EMPTY_CONTENT_FAILURE for item in observations)
+    assert lookup.empty_content_failure_count == 2
 
 
 def test_view_eligibility_follows_current_context_and_classifies_failures() -> None:

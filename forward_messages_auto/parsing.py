@@ -148,7 +148,8 @@ class PlannerHistoryParser:
 
         方法按消息出现顺序扫描 Planner 历史，先记录 assistant 工具调用中
         的 ``call_id -> msg_id``，再用 tool 消息中的 ``tool_call_id`` 配对。
-        无关工具、无 ID 调用、空结果和格式异常消息都会被忽略。
+        无关工具、无 ID 调用和格式异常消息都会被忽略；空结果会被记录为
+        空内容失败，因此不会出现在本方法返回的成功结果中。
 
         Args:
             messages: Planner 请求中的消息历史。期望为 OpenAI 兼容字典列表；
@@ -182,7 +183,8 @@ class PlannerHistoryParser:
 
         Returns:
             按 tool 消息出现顺序排列的 ``ViewToolObservation`` 列表。无法
-            配对、结果为空或结构异常的消息会被忽略。
+            配对或结构异常的消息会被忽略；已配对的空字符串或纯空白结果
+            会分类为 ``EMPTY_CONTENT_FAILURE``。
         """
 
         if not isinstance(messages, list):
@@ -244,23 +246,29 @@ class PlannerHistoryParser:
         Args:
             message: 角色为 tool 的 Planner 历史消息。
             call_to_message_id: 已收集的工具调用 ID 到源消息 ID 的映射。
-            observations: 接收已配对查看结果的可变列表。只有调用 ID 已知
-                且文本结果非空时才会追加。
+            observations: 接收已配对查看结果的可变列表。调用 ID 已知且
+                ``content`` 为字符串时追加；空白文本按空内容失败记录。
         """
 
         call_id = str(message.get("tool_call_id") or "").strip()
         message_id = call_to_message_id.get(call_id, "")
         content = message.get("content")
-        if message_id and isinstance(content, str) and content.strip():
-            normalized_content = content.strip()
-            observations.append(
-                ViewToolObservation(
-                    call_id=call_id,
-                    message_id=message_id,
-                    content=normalized_content,
-                    kind=PlannerHistoryParser._classify_view_result(normalized_content),
-                )
+        if not message_id or not isinstance(content, str):
+            return
+
+        normalized_content = content.strip()
+        observations.append(
+            ViewToolObservation(
+                call_id=call_id,
+                message_id=message_id,
+                content=normalized_content,
+                kind=(
+                    PlannerHistoryParser._classify_view_result(normalized_content)
+                    if normalized_content
+                    else ViewObservationKind.EMPTY_CONTENT_FAILURE
+                ),
             )
+        )
 
     @staticmethod
     def _classify_view_result(content: str) -> ViewObservationKind:
