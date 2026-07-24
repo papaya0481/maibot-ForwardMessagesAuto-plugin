@@ -971,11 +971,12 @@ async def test_hook_syncs_view_eligibility_without_rewriting_tool_definitions(tm
 
 @pytest.mark.asyncio
 async def test_tool_rejects_unviewed_and_single_failure_before_fallback(tmp_path: Path) -> None:
-    """验证当前上下文没有成功查看和首次失败都不会静默降级转发。
+    """验证缺少成功查看时会要求紧接续轮重试且不会静默降级转发。
 
     未查看时即使提供摘要也应拒绝任务；登记一次已知失败后仍应要求 Planner
-    再次查看。第二个独立查看调用也失败后，才允许使用摘要创建转发任务。
-    该测试防止暂时性缺失绕过完整查看要求。
+    在当前 ToolResult 后的紧接续轮再次查看，并明确禁止等待新消息或使用摘要
+    绕过。第二个独立查看调用也失败后，才允许使用摘要创建转发任务。该测试
+    防止暂时性缺失绕过完整查看要求或把重试错误推迟到下一条聊天消息。
 
     Args:
         tmp_path: pytest 提供的隔离状态目录，用于运行真实请求和后台投递。
@@ -992,7 +993,11 @@ async def test_tool_rejects_unviewed_and_single_failure_before_fallback(tmp_path
         stream_id="source-stream",
     )
     assert missing_result["success"] is False
-    assert "尚未取得成功" in missing_result["content"]
+    assert "当前 Planner 上下文中尚无成功" in missing_result["content"]
+    assert 'view_forward_message(msg_id="forward-message")' in missing_result["content"]
+    assert "收到本工具结果后的紧接续轮" in missing_result["content"]
+    assert "不要等待新的聊天消息" in missing_result["content"]
+    assert "不要使用 content_summary 绕过查看" in missing_result["content"]
     assert plugin.ctx.events == []
 
     sync_failed_views(plugin, [ViewObservationKind.RETRYABLE_FAILURE])
@@ -1005,6 +1010,7 @@ async def test_tool_rejects_unviewed_and_single_failure_before_fallback(tmp_path
     )
     assert first_failure_result["success"] is False
     assert "配置阈值 2 次" in first_failure_result["content"]
+    assert "收到本工具结果后的紧接续轮" in first_failure_result["content"]
     assert plugin.ctx.events == []
 
     sync_failed_views(

@@ -333,6 +333,9 @@ class ForwardRequestService:
             )
 
         failure_threshold = self.config.behavior.view_failure_fallback_threshold
+        continuation_instruction = self._build_view_continuation_instruction(
+            source_message_id,
+        )
         fallback_reason = ""
         if (
             observation_kind is ViewObservationKind.RETRYABLE_FAILURE
@@ -351,15 +354,18 @@ class ForwardRequestService:
                     "当前连续记录到 "
                     f"{lookup.retryable_failure_count} 次 view_forward_message 可重试故障，"
                     f"尚未达到允许降级的配置阈值 {failure_threshold} 次；"
-                    "请再次查看，成功后再重试转发。"
+                    f"{continuation_instruction}"
                 )
             elif observation_kind is ViewObservationKind.EMPTY_CONTENT_FAILURE:
                 retry_detail = (
                     "view_forward_message 首次返回空内容；请再进行一次诊断查看。"
                     "若仍为空，插件才允许使用摘要或消息预览降级。"
+                    f"{continuation_instruction}"
                 )
             else:
-                retry_detail = "尚未取得成功的 view_forward_message 完整内容，请先完成查看后再重试转发。"
+                retry_detail = (
+                    f"当前 Planner 上下文中尚无成功的 view_forward_message 完整内容。{continuation_instruction}"
+                )
             return self.failure(retry_detail)
 
         expanded_content = str(content_summary or "").strip()
@@ -377,6 +383,29 @@ class ForwardRequestService:
             source_message_id,
         )
         return str(message.get("processed_plain_text") or "").strip() or "[合并转发消息]"
+
+    @staticmethod
+    def _build_view_continuation_instruction(source_message_id: str) -> str:
+        """构造要求 Planner 在当前工具结果紧接续轮重新查看的指令。
+
+        该文本会作为 ``request_cross_group_forward`` 的 ToolResult 进入
+        Maisaka 历史，并在正常工具续轮中直接出现在下一次 Planner 请求。
+        指令明确禁止等待新聊天消息或提前使用摘要绕过查看。
+
+        Args:
+            source_message_id: 要在续轮传给 ``view_forward_message`` 的源消息
+                ID。
+
+        Returns:
+            包含续轮时机、查看调用和禁止绕过要求的简体中文指令。
+        """
+
+        return (
+            "请在收到本工具结果后的紧接续轮中先调用 "
+            f'view_forward_message(msg_id="{source_message_id}")；'
+            "查看成功后再调用 request_cross_group_forward。"
+            "不要等待新的聊天消息，也不要使用 content_summary 绕过查看。"
+        )
 
     def _duplicate_result(
         self,
