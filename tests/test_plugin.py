@@ -1291,7 +1291,9 @@ async def test_tool_rejects_after_successful_view_leaves_current_context(tmp_pat
         stream_id="source-stream",
     )
     assert result["success"] is False
-    assert "请先完成查看" in result["content"]
+    assert "当前 Planner 上下文中尚无成功" in result["content"]
+    assert "收到本工具结果后的紧接续轮" in result["content"]
+    assert "不要使用 content_summary 绕过查看" in result["content"]
     assert plugin.ctx.events == []
     await plugin.on_unload()
 
