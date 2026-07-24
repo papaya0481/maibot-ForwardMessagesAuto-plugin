@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import IntEnum
+from enum import Enum, IntEnum
 from typing import Any
 
 
@@ -50,6 +50,23 @@ class ViewCacheEntry:
 
     content: str
     cached_at: float
+
+
+class ViewCacheStatus(str, Enum):
+    """完整查看内容在插件缓存中的状态。"""
+
+    READY = "ready"
+    MISSING = "missing"
+    EXPIRED = "expired"
+
+
+@dataclass(frozen=True, slots=True)
+class ViewCacheLookup:
+    """一次完整查看缓存查询结果。"""
+
+    status: ViewCacheStatus
+    content: str
+    failure_count: int
 
 
 @dataclass(slots=True)

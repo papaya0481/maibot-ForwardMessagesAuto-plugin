@@ -6,9 +6,18 @@
 
 ## [Unreleased]
 
+## [0.1.9] - 2026-07-24
+
 ### Changed
 
 - 优化自主转发 deferred Tool 的首次暴露描述，明确按 `msg_id` 分享有意思、符合人设且值得转发的内容。
+- 成功查看合并转发后，在紧接着的 Planner 续轮末尾追加一次判断提醒；请求被新消息打断时保留提醒，直到 Planner 真正返回。
+- 普通缓存缺失或首次查看失败时拒绝转发；仅在连续两次已知查看失败或缓存确认过期时允许摘要、预览降级。
+
+### Fixed
+
+- 按 `tool_call_id` 去重查看结果，避免 Planner 历史中的旧结果反复刷新缓存 TTL。
+- 识别当前 Host 的已知 `view_forward_message` 失败文本，避免把错误信息作为完整内容写入目标群上下文。
 
 ## [0.1.8] - 2026-07-24
 
@@ -87,7 +96,8 @@
 - 新增分阶段持久化状态与幂等恢复，避免后续步骤失败时重复发送。
 - 新增测试，覆盖缓存、白名单、消息节点、顺序投递、失败隔离和去重。
 
-[Unreleased]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.8...HEAD
+[Unreleased]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.9...HEAD
+[0.1.9]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.8...v0.1.9
 [0.1.8]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.7...v0.1.8
 [0.1.7]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.6...v0.1.7
 [0.1.6]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.5...v0.1.6

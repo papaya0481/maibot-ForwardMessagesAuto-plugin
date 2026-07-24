@@ -2,7 +2,7 @@
 
 让 MaiBot 在 source 白名单群聊中看完一则合并转发消息后，自主判断是否值得分享。插件按照 target 白名单顺序发送消息，并在每个目标群中触发 Planner，自主决定是否补充一句看法。
 
-当前版本为 `0.1.8`，基于 MaiBot `1.1.0` 开发，仅面向 SnowLuma Adapter 下的 QQ 群聊进行验证。
+当前版本为 `0.1.9`，基于 MaiBot `1.1.0` 开发，仅面向 SnowLuma Adapter 下的 QQ 群聊进行验证。
 
 ## 安装要求
 
@@ -45,7 +45,16 @@ source 和 target 均只填写 QQ 群号字符串。`target_groups` 的列表顺
 
 ## 缓存与失败恢复
 
-插件通过 `maisaka.planner.before_request` Hook 按当前聊天流缓存 `view_forward_message` 的完整结果，不依赖启动阶段的聊天流列表。缓存未命中时依次使用 Planner 提供的 `content_summary` 和原消息预览降级，不会重复调用查看工具。
+插件通过 `maisaka.planner.before_request` Hook 按当前聊天流缓存
+`view_forward_message` 的完整结果，并按 `tool_call_id` 保证同一次查看不会
+反复刷新缓存 TTL。成功查看后，插件会在紧接着的 Planner 续轮末尾追加
+一次判断提醒；若请求被新消息打断，提醒会保留到 Planner 真正返回为止。
+
+普通缓存缺失或首次已知查看失败时，转发 Tool 会拒绝创建任务并要求 Planner
+重新查看。只有连续两次已知查看失败，或曾经成功缓存但已经确认过期时，才会
+依次使用 Planner 提供的 `content_summary` 和原消息预览降级。由于当前 Host
+未向 Planner Hook 暴露 ToolResult 的成功状态，插件暂时依据已知稳定失败
+文案进行识别；未来主程序改进方向见 [TODO](docs/TODO.md)。
 
 每个目标群分别记录以下阶段：
 

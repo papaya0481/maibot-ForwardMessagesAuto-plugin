@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "id": "papaya0481.forward-messages-auto",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "name": "麦麦自主跨群转发插件",
   "description": "由源群 Planner 判断是否分享合并转发消息，并按 QQ 群白名单顺序转发和触发目标群 Planner。",
   "author": {

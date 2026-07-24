@@ -38,6 +38,7 @@ class ForwardingRuntime:
 
         self._config_provider = config_provider
         self.view_cache = ViewResultCache()
+        self._pending_view_judgments: dict[str, set[str]] = {}
         self.streams = GroupStreamRegistry(context)
         self.state = ForwardStateStore(
             context.paths.data_dir / "forward_state.json",
@@ -130,20 +131,73 @@ class ForwardingRuntime:
         self.view_cache.cleanup(self.config.behavior.view_cache_ttl_seconds)
         await self.state.prune(self.config.behavior.dedupe_ttl_seconds)
 
-    def capture_view_results(self, session_id: str, messages: Any) -> None:
-        """从 Planner 历史提取并缓存合并转发完整内容。
+    def capture_view_results(self, session_id: str, messages: Any) -> list[str]:
+        """从 Planner 历史登记新的查看结果并缓存成功内容。
 
-        所有匹配结果均以当前 ``session_id`` 和各自 ``msg_id`` 为键写入，
-        随后按最新配置清理过期条目。
+        每个 ``tool_call_id`` 在同一聊天流中只处理一次，避免历史结果在
+        后续 Planner 请求中反复刷新 TTL。已知失败结果仅累计次数，成功
+        结果才写入缓存，并登记为等待 Planner 立即判断的消息。
 
         Args:
             session_id: source Planner 当前聊天流 ID。
             messages: Planner 请求携带的 OpenAI 兼容消息历史。
+
+        Returns:
+            本次首次捕获成功的 ``msg_id`` 列表。调用方可据此判断是否需要
+            向紧接着的 Planner 请求追加一次性续轮提醒。
         """
 
-        for message_id, content in PlannerHistoryParser.extract_view_results(messages):
-            self.view_cache.put(session_id, message_id, content)
+        fresh_message_ids: list[str] = []
+        for observation in PlannerHistoryParser.extract_view_observations(messages):
+            is_fresh_success = self.view_cache.record_observation(
+                session_id,
+                observation.call_id,
+                observation.message_id,
+                observation.content,
+                failed=observation.failed,
+            )
+            if is_fresh_success:
+                fresh_message_ids.append(observation.message_id)
+        if fresh_message_ids:
+            self._pending_view_judgments.setdefault(session_id, set()).update(fresh_message_ids)
         self.view_cache.cleanup(self.config.behavior.view_cache_ttl_seconds)
+        return fresh_message_ids
+
+    def build_view_judgment_reminder(self, session_id: str) -> str:
+        """构造成功查看后等待 Planner 消费的续轮判断提醒。
+
+        提醒在对应 Planner 请求成功返回前保持待处理，因此请求若被新消息
+        打断，下一次重试仍会收到相同提醒。方法只读取状态，不清除待处理项。
+
+        Args:
+            session_id: 当前 source Planner 聊天流 ID。
+
+        Returns:
+            有待判断消息时返回一个 ``system-reminder`` 文本，否则返回空串。
+        """
+
+        message_ids = sorted(self._pending_view_judgments.get(session_id, set()))
+        if not message_ids:
+            return ""
+        joined_message_ids = "、".join(message_ids)
+        return (
+            "<system-reminder>\n"
+            f"刚刚已经成功查看合并转发消息 msg_id={joined_message_ids} 的完整内容。"
+            "请在本次续轮中优先依据刚看到的完整内容，判断它是否有意思、符合你的人设并值得分享到其他群聊；"
+            "值得时通过 tool_search 发现并调用 request_cross_group_forward，不值得时不要转发。"
+            "不要等待下一条聊天消息后再作判断。\n"
+            "</system-reminder>"
+        )
+
+    def acknowledge_view_judgment(self, session_id: str) -> None:
+        """确认 Planner 已完成一次带续轮提醒的模型响应。
+
+        Args:
+            session_id: 已成功返回 Planner 响应的聊天流 ID。该方法清除该流
+                当前全部待判断消息，使后续普通轮次不再重复注入提醒。
+        """
+
+        self._pending_view_judgments.pop(session_id, None)
 
     async def request_forward(
         self,
@@ -157,7 +211,8 @@ class ForwardingRuntime:
         Args:
             msg_id: source Planner 已完整查看的合并转发消息 ID。
             sharing_reason: Planner 给出的分享理由，可为空。
-            content_summary: 查看缓存缺失时使用的忠实摘要，可为空。
+            content_summary: 缓存确认过期或多次查看失败时使用的忠实摘要，
+                可为空。
             invocation_context: SDK 注入的调用上下文；请求服务读取
                 ``platform``、``group_id``、``stream_id`` 或 ``chat_id``。
 

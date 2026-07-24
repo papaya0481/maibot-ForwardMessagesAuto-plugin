@@ -2,9 +2,32 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 VIEW_FORWARD_TOOL_NAME = "view_forward_message"
+VIEW_FORWARD_FAILURE_PREFIXES = (
+    "查看转发消息工具需要提供有效的 `msg_id` 参数。",
+    "未找到目标转发消息，msg_id=",
+    "目标消息不是可展开查看的转发消息，msg_id=",
+    "查看转发消息完整内容时发生异常。",
+    "转发消息内容为空，msg_id=",
+    "工具 view_forward_message 调用失败：",
+    "未找到工具：view_forward_message",
+    "未找到内置工具处理器：view_forward_message",
+    "统一工具注册表尚未初始化。",
+    "工具 view_forward_message 执行失败。",
+)
+
+
+@dataclass(frozen=True, slots=True)
+class ViewToolObservation:
+    """一组已经配对的查看工具调用及文本结果。"""
+
+    call_id: str
+    message_id: str
+    content: str
+    failed: bool
 
 
 class ForwardMessageParser:
@@ -136,11 +159,33 @@ class PlannerHistoryParser:
             结果引用 ``call-1`` 时，返回 ``[("m1", "完整内容")]``。
         """
 
+        return [
+            (observation.message_id, observation.content)
+            for observation in PlannerHistoryParser.extract_view_observations(messages)
+            if not observation.failed
+        ]
+
+    @staticmethod
+    def extract_view_observations(messages: Any) -> list[ViewToolObservation]:
+        """提取查看调用、结果文本和插件可识别的失败状态。
+
+        当前 Host 的 ``before_request`` Hook 不提供 ToolResult ``success``
+        字段，因此失败状态暂时通过内置工具和统一注册表的稳定错误前缀判断。
+        未命中已知失败前缀的非空结果按成功处理。
+
+        Args:
+            messages: Planner 请求中的 OpenAI 兼容消息字典列表。
+
+        Returns:
+            按 tool 消息出现顺序排列的 ``ViewToolObservation`` 列表。无法
+            配对、结果为空或结构异常的消息会被忽略。
+        """
+
         if not isinstance(messages, list):
             return []
 
         call_to_message_id: dict[str, str] = {}
-        results: list[tuple[str, str]] = []
+        observations: list[ViewToolObservation] = []
         for message in messages:
             if not isinstance(message, dict):
                 continue
@@ -148,8 +193,8 @@ class PlannerHistoryParser:
             if role == "assistant":
                 PlannerHistoryParser._record_calls(message, call_to_message_id)
             elif role == "tool":
-                PlannerHistoryParser._record_result(message, call_to_message_id, results)
-        return results
+                PlannerHistoryParser._record_result(message, call_to_message_id, observations)
+        return observations
 
     @staticmethod
     def _record_calls(message: dict[str, Any], call_to_message_id: dict[str, str]) -> None:
@@ -188,19 +233,27 @@ class PlannerHistoryParser:
     def _record_result(
         message: dict[str, Any],
         call_to_message_id: dict[str, str],
-        results: list[tuple[str, str]],
+        observations: list[ViewToolObservation],
     ) -> None:
         """将一条可配对的 tool 结果追加到结果列表。
 
         Args:
             message: 角色为 tool 的 Planner 历史消息。
             call_to_message_id: 已收集的工具调用 ID 到源消息 ID 的映射。
-            results: 接收 ``(msg_id, content)`` 的可变结果列表。只有调用 ID
-                已知且文本结果非空时才会追加。
+            observations: 接收已配对查看结果的可变列表。只有调用 ID 已知
+                且文本结果非空时才会追加。
         """
 
         call_id = str(message.get("tool_call_id") or "").strip()
         message_id = call_to_message_id.get(call_id, "")
         content = message.get("content")
         if message_id and isinstance(content, str) and content.strip():
-            results.append((message_id, content.strip()))
+            normalized_content = content.strip()
+            observations.append(
+                ViewToolObservation(
+                    call_id=call_id,
+                    message_id=message_id,
+                    content=normalized_content,
+                    failed=normalized_content.startswith(VIEW_FORWARD_FAILURE_PREFIXES),
+                )
+            )

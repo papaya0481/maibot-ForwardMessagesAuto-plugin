@@ -196,19 +196,21 @@ class ForwardMessagesAutoPlugin(MaiBotPlugin):
         error_policy=ErrorPolicy.SKIP,
     )
     async def capture_view_forward_result(self, **kwargs: Any) -> dict[str, Any]:
-        """按当前聊天流缓存合并转发查看结果。
+        """缓存查看结果，并在成功查看后的续轮末尾追加一次判断提醒。
 
         方法从 Planner 历史中提取 ``view_forward_message`` 结果，并以当前
-        ``session_id`` 隔离保存。它不修改工具定义；自主转发 Tool 由 MaiBot
-        的 deferred tool 机制负责发现，调用权限则由处理器按当前 source
-        白名单和消息所属聊天流实时校验。
+        ``session_id`` 隔离保存。每个工具调用只处理一次；成功结果会触发
+        一个位于请求末尾的 ``system-reminder``，要求 Planner 立即判断是否
+        值得分享。它不修改工具定义；自主转发 Tool 仍由 MaiBot 的 deferred
+        tool 机制负责发现。
 
         Args:
             **kwargs: ``maisaka.planner.before_request`` Hook 参数。使用
-                ``session_id`` 隔离缓存，并使用 ``messages`` 提取查看结果。
+                ``session_id`` 隔离状态，并读取及按需追加 ``messages``。
 
         Returns:
-            阻塞 Hook 的继续结果，所有 Hook 参数保持原样。
+            阻塞 Hook 的继续结果。没有待判断消息时参数保持原样；成功查看
+            后会在 ``modified_kwargs.messages`` 末尾追加一次判断提醒。
 
         Raises:
             RuntimeError: Hook 在 ``on_load`` 初始化运行时前被调用。
@@ -217,6 +219,41 @@ class ForwardMessagesAutoPlugin(MaiBotPlugin):
         session_id = str(kwargs.get("session_id") or "").strip()
         if session_id:
             self.runtime.capture_view_results(session_id, kwargs.get("messages"))
+            reminder = self.runtime.build_view_judgment_reminder(session_id)
+            messages = kwargs.get("messages")
+            if reminder and isinstance(messages, list):
+                messages.append({"role": "user", "content": reminder})
+        return {"action": "continue", "modified_kwargs": kwargs}
+
+    @HookHandler(
+        "maisaka.planner.after_response",
+        name="acknowledge_view_forward_judgment",
+        description="确认 Planner 已完成成功查看后的续轮判断。",
+        mode=HookMode.BLOCKING,
+        order=HookOrder.LATE,
+        timeout_ms=3000,
+        error_policy=ErrorPolicy.SKIP,
+    )
+    async def acknowledge_view_forward_judgment(self, **kwargs: Any) -> dict[str, Any]:
+        """在 Planner 成功返回后清除对应聊天流的一次性判断提醒。
+
+        被新消息中断的 Planner 请求不会触发本 Hook，因此待处理提醒会保留
+        到重试请求；正常返回后立即清除，避免未来无关消息再次触发旧判断。
+
+        Args:
+            **kwargs: ``maisaka.planner.after_response`` Hook 参数。仅读取
+                ``session_id``，其余响应和工具调用字段保持不变。
+
+        Returns:
+            保持 Planner 响应不变的阻塞 Hook 继续结果。
+
+        Raises:
+            RuntimeError: Hook 在 ``on_load`` 初始化运行时前被调用。
+        """
+
+        session_id = str(kwargs.get("session_id") or "").strip()
+        if session_id:
+            self.runtime.acknowledge_view_judgment(session_id)
         return {"action": "continue", "modified_kwargs": kwargs}
 
     @Tool(
@@ -226,7 +263,7 @@ class ForwardMessagesAutoPlugin(MaiBotPlugin):
         ),
         detailed_description=(
             "仅在你已经成功调用 view_forward_message 查看 msg_id 的全部内容，并自主判断值得分享时调用。"
-            "目标群由插件白名单决定，禁止自行指定目标群。content_summary 用于完整内容缓存失效时降级。"
+            "目标群由插件白名单决定，禁止自行指定目标群。content_summary 只在完整内容确认过期或多次查看失败时降级使用。"
         ),
         parameters=[
             ToolParameterInfo(
@@ -245,7 +282,7 @@ class ForwardMessagesAutoPlugin(MaiBotPlugin):
             ToolParameterInfo(
                 name="content_summary",
                 param_type=ToolParamType.STRING,
-                description="对完整转发内容的忠实摘要，仅在插件缓存失效时使用",
+                description="对完整转发内容的忠实摘要，仅在缓存确认过期或多次查看失败时降级使用",
                 required=False,
                 default="",
             ),
@@ -269,7 +306,7 @@ class ForwardMessagesAutoPlugin(MaiBotPlugin):
         Args:
             msg_id: 刚通过 ``view_forward_message`` 查看过的源消息 ID。
             sharing_reason: Planner 判断内容值得分享的简短理由。
-            content_summary: 查看结果缓存失效时使用的忠实内容摘要。
+            content_summary: 查看缓存确认过期或多次查看失败时使用的忠实摘要。
             **kwargs: SDK 注入的 Tool 上下文。必须能解析 QQ ``platform``、
                 ``group_id`` 和 ``stream_id`` 或 ``chat_id``。
 

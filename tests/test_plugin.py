@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from copy import deepcopy
 import logging
 import subprocess
 import sys
@@ -10,8 +11,10 @@ from typing import Any
 
 import pytest
 
+from forward_messages_auto.cache import ViewResultCache
 from forward_messages_auto.config import GroupIdList
 from forward_messages_auto.config_recovery import LastKnownGoodConfig
+from forward_messages_auto.models import ViewCacheStatus
 from forward_messages_auto.parsing import ForwardMessageParser, PlannerHistoryParser
 from forward_messages_auto.runtime import FORWARD_TOOL_NAME
 from forward_messages_auto.streams import GroupStreamRegistry
@@ -417,7 +420,7 @@ def build_plugin(
         {
             "plugin": {
                 "enabled": True,
-                "version": "0.1.8",
+                "version": "0.1.9",
                 "config_version": "0.1.1",
             },
             "routing": {
@@ -461,6 +464,30 @@ async def wait_for_background_tasks(plugin: ForwardMessagesAutoPlugin) -> None:
     tasks = list(plugin.runtime.background_tasks)
     if tasks:
         await asyncio.gather(*tasks)
+
+
+def seed_successful_view(
+    plugin: ForwardMessagesAutoPlugin,
+    *,
+    stream_id: str = "source-stream",
+    message_id: str = "forward-message",
+    content: str = "完整展开内容",
+) -> None:
+    """为与查看流程无关的测试写入一条长期有效的成功查看缓存。
+
+    Args:
+        plugin: 已执行 ``on_load`` 并初始化运行时的插件实例。
+        stream_id: 缓存所属的 source 聊天流 ID。
+        message_id: 已经完整查看的合并转发消息 ID。
+        content: 写入目标群上下文的完整查看文本。
+    """
+
+    plugin.runtime.view_cache.put(
+        stream_id,
+        message_id,
+        content,
+        now=10**12,
+    )
 
 
 def test_normalize_group_ids_preserves_order_and_deduplicates() -> None:
@@ -583,6 +610,78 @@ def test_extract_view_forward_results_pairs_tool_call_and_result() -> None:
     assert PlannerHistoryParser.extract_view_results(messages) == [("message-1", "完整展开内容")]
 
 
+def test_view_result_parser_marks_known_host_failure_without_caching_it() -> None:
+    """验证已知 Host 失败文本会被识别为失败而不是完整查看内容。
+
+    同一个 ``view_forward_message`` 调用返回“查看时发生异常”后，观察结果
+    应保留调用和消息 ID 并标记 ``failed=True``，成功结果接口则返回空列表。
+    该测试防止错误文本被写入目标群上下文。
+    """
+
+    messages = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "failed-call",
+                    "function": {
+                        "name": "view_forward_message",
+                        "arguments": {"msg_id": "message-1"},
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "content": "查看转发消息完整内容时发生异常。",
+            "tool_call_id": "failed-call",
+        },
+    ]
+
+    observations = PlannerHistoryParser.extract_view_observations(messages)
+    assert len(observations) == 1
+    assert observations[0].call_id == "failed-call"
+    assert observations[0].message_id == "message-1"
+    assert observations[0].failed is True
+    assert PlannerHistoryParser.extract_view_results(messages) == []
+
+
+def test_view_cache_deduplicates_calls_and_preserves_real_expiry() -> None:
+    """验证历史重扫不会刷新 TTL，且不同失败调用会独立累计。
+
+    同一成功 ``call_id`` 在较晚时间重复登记后，缓存仍应按首次捕获时间
+    过期；另一个消息的两个不同失败调用应累计为两次。该测试防止历史结果
+    无限续期，也确保只有“多次失败”能够满足后续降级门槛。
+    """
+
+    cache = ViewResultCache()
+    assert cache.record_observation(
+        "stream-1",
+        "success-call",
+        "message-1",
+        "完整内容",
+        failed=False,
+        now=100.0,
+    )
+    assert not cache.record_observation(
+        "stream-1",
+        "success-call",
+        "message-1",
+        "完整内容",
+        failed=False,
+        now=1000.0,
+    )
+    cache.cleanup(60, now=161.0)
+    assert cache.lookup("stream-1", "message-1", 60).status is ViewCacheStatus.EXPIRED
+
+    cache.record_observation("stream-1", "failure-1", "message-2", "失败", failed=True)
+    cache.record_observation("stream-1", "failure-2", "message-2", "失败", failed=True)
+    failed_lookup = cache.lookup("stream-1", "message-2", 60)
+    assert failed_lookup.status is ViewCacheStatus.MISSING
+    assert failed_lookup.failure_count == 2
+
+
 def test_forward_tool_component_is_deferred_and_group_scoped() -> None:
     """验证自主转发 Tool 的 deferred 声明、群聊范围和首次暴露描述。
 
@@ -629,11 +728,12 @@ async def test_group_stream_registry_resolves_targets_on_demand() -> None:
 
 @pytest.mark.asyncio
 async def test_hook_caches_view_result_without_rewriting_tool_definitions(tmp_path: Path) -> None:
-    """验证 Hook 按聊天流缓存查看结果且不再承担工具授权。
+    """验证 Hook 缓存查看结果、保持工具定义并可靠维持续轮提醒。
 
     即使启动阶段聊天流列表为空，当前会话仍应缓存 ``forward-message`` 的
-    完整展开内容，且工具定义保持原样。另一会话的缓存必须按 session 隔离。
-    该测试防止重新把缓存和 deferred Tool 发现绑定到启动期聊天流快照。
+    完整展开内容，且工具定义保持原样。Planner 正常响应前重复请求应继续
+    收到判断提醒，响应后旧历史不再触发提醒；另一会话的缓存必须隔离。
+    该测试防止新消息打断导致判断任务丢失，或旧结果反复提醒。
 
     Args:
         tmp_path: pytest 提供的临时数据目录，用于插件加载和卸载状态隔离。
@@ -663,21 +763,145 @@ async def test_hook_caches_view_result_without_rewriting_tool_definitions(tmp_pa
     ]
 
     plugin.ctx.chat.streams.clear()
+    current_messages = deepcopy(messages)
     current_result = await plugin.capture_view_forward_result(
         session_id="current-stream",
-        messages=messages,
+        messages=current_messages,
         tool_definitions=definitions,
     )
     assert plugin.runtime.view_cache.get("current-stream", "forward-message", 1800) == "完整展开内容"
     assert current_result["modified_kwargs"]["tool_definitions"] == definitions
+    assert current_messages[-1]["role"] == "user"
+    assert "不要等待下一条聊天消息后再作判断" in current_messages[-1]["content"]
 
+    interrupted_retry_messages = deepcopy(messages)
+    await plugin.capture_view_forward_result(
+        session_id="current-stream",
+        messages=interrupted_retry_messages,
+        tool_definitions=definitions,
+    )
+    assert "不要等待下一条聊天消息后再作判断" in interrupted_retry_messages[-1]["content"]
+
+    await plugin.acknowledge_view_forward_judgment(
+        session_id="current-stream",
+        response="我会现在判断",
+        tool_calls=[],
+    )
+    acknowledged_messages = deepcopy(messages)
+    await plugin.capture_view_forward_result(
+        session_id="current-stream",
+        messages=acknowledged_messages,
+        tool_definitions=definitions,
+    )
+    assert acknowledged_messages == messages
+
+    other_messages = deepcopy(messages)
     other_result = await plugin.capture_view_forward_result(
         session_id="target-a",
-        messages=messages,
+        messages=other_messages,
         tool_definitions=definitions,
     )
     assert plugin.runtime.view_cache.get("target-a", "forward-message", 1800) == "完整展开内容"
     assert other_result["modified_kwargs"]["tool_definitions"] == definitions
+    await plugin.on_unload()
+
+
+@pytest.mark.asyncio
+async def test_tool_rejects_unviewed_and_single_failure_before_fallback(tmp_path: Path) -> None:
+    """验证普通缓存缺失和首次查看失败都不会静默降级转发。
+
+    未查看时即使提供摘要也应拒绝任务；登记一次已知失败后仍应要求 Planner
+    再次查看。第二个独立查看调用也失败后，才允许使用摘要创建转发任务。
+    该测试防止暂时性缺失绕过完整查看要求。
+
+    Args:
+        tmp_path: pytest 提供的隔离状态目录，用于运行真实请求和后台投递。
+    """
+
+    plugin = build_plugin(tmp_path)
+    await plugin.on_load()
+
+    missing_result = await plugin.request_cross_group_forward(
+        "forward-message",
+        content_summary="不应立即使用的摘要",
+        platform="qq",
+        group_id="10001",
+        stream_id="source-stream",
+    )
+    assert missing_result["success"] is False
+    assert "尚未取得成功" in missing_result["content"]
+    assert plugin.ctx.events == []
+
+    plugin.runtime.view_cache.record_observation(
+        "source-stream",
+        "failure-1",
+        "forward-message",
+        "查看转发消息完整内容时发生异常。",
+        failed=True,
+    )
+    first_failure_result = await plugin.request_cross_group_forward(
+        "forward-message",
+        content_summary="仍不应使用的摘要",
+        platform="qq",
+        group_id="10001",
+        stream_id="source-stream",
+    )
+    assert first_failure_result["success"] is False
+    assert "再次调用 view_forward_message" in first_failure_result["content"]
+    assert plugin.ctx.events == []
+
+    plugin.runtime.view_cache.record_observation(
+        "source-stream",
+        "failure-2",
+        "forward-message",
+        "查看转发消息完整内容时发生异常。",
+        failed=True,
+    )
+    fallback_result = await plugin.request_cross_group_forward(
+        "forward-message",
+        content_summary="两次失败后的降级摘要",
+        platform="qq",
+        group_id="10001",
+        stream_id="source-stream",
+    )
+    assert fallback_result["success"] is True
+    assert fallback_result["accepted"] is True
+    await wait_for_background_tasks(plugin)
+    assert "两次失败后的降级摘要" in plugin.ctx.maisaka.context.visible_text_by_stream["target-a"]
+    await plugin.on_unload()
+
+
+@pytest.mark.asyncio
+async def test_tool_allows_fallback_after_confirmed_cache_expiry(tmp_path: Path) -> None:
+    """验证曾成功缓存但确认过期后允许摘要降级。
+
+    使用远早于当前时间的成功缓存模拟 TTL 到期。Tool 应接受任务并把 Planner
+    摘要写入目标群上下文。该测试防止收紧普通缓存缺失后误伤明确过期场景。
+
+    Args:
+        tmp_path: pytest 提供的隔离状态目录，用于运行后台投递。
+    """
+
+    plugin = build_plugin(tmp_path)
+    await plugin.on_load()
+    plugin.runtime.view_cache.put(
+        "source-stream",
+        "forward-message",
+        "已经过期的完整内容",
+        now=0.0,
+    )
+
+    result = await plugin.request_cross_group_forward(
+        "forward-message",
+        content_summary="缓存过期后的降级摘要",
+        platform="qq",
+        group_id="10001",
+        stream_id="source-stream",
+    )
+    assert result["success"] is True
+    assert result["accepted"] is True
+    await wait_for_background_tasks(plugin)
+    assert "缓存过期后的降级摘要" in plugin.ctx.maisaka.context.visible_text_by_stream["target-a"]
     await plugin.on_unload()
 
 
@@ -752,6 +976,7 @@ async def test_source_message_query_accepts_legacy_wrapped_success(tmp_path: Pat
     plugin = build_plugin(tmp_path)
     plugin.ctx.message = FakeStaticMessageCapability({"success": True, "message": build_forward_message()})
     await plugin.on_load()
+    seed_successful_view(plugin)
     result = await plugin.request_cross_group_forward(
         "forward-message",
         content_summary="降级摘要",
@@ -837,6 +1062,7 @@ async def test_source_group_can_share_forward_received_from_another_group(tmp_pa
         build_forward_message(stream_id="source-stream", group_id="original-group")
     )
     await plugin.on_load()
+    seed_successful_view(plugin, content="来自其他群的合并转发完整内容")
     result = await plugin.request_cross_group_forward(
         "forward-message",
         content_summary="来自其他群的合并转发摘要",
@@ -896,6 +1122,7 @@ async def test_send_failure_skips_context_but_continues_next_target(tmp_path: Pa
 
     plugin = build_plugin(tmp_path, failed_streams={"target-a"})
     await plugin.on_load()
+    seed_successful_view(plugin)
     result = await plugin.request_cross_group_forward(
         "forward-message",
         content_summary="降级摘要",
@@ -930,6 +1157,7 @@ async def test_persisted_stage_resumes_without_sending_again(tmp_path: Path) -> 
 
     first_plugin = build_plugin(tmp_path, failed_context_streams={"target-a"})
     await first_plugin.on_load()
+    seed_successful_view(first_plugin)
     first_result = await first_plugin.request_cross_group_forward(
         "forward-message",
         content_summary="降级摘要",
@@ -948,6 +1176,7 @@ async def test_persisted_stage_resumes_without_sending_again(tmp_path: Path) -> 
 
     resumed_plugin = build_plugin(tmp_path)
     await resumed_plugin.on_load()
+    seed_successful_view(resumed_plugin)
     resumed_result = await resumed_plugin.request_cross_group_forward(
         "forward-message",
         content_summary="降级摘要",

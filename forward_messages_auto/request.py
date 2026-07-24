@@ -9,9 +9,11 @@ from typing import Any
 from .cache import ViewResultCache
 from .config import ForwardMessagesAutoConfig, GroupIdList
 from .delivery import ForwardDeliveryService
-from .models import ForwardJob, TargetStage
+from .models import ForwardJob, TargetStage, ViewCacheStatus
 from .parsing import ForwardMessageParser
 from .state import ForwardStateStore
+
+VIEW_FAILURE_FALLBACK_THRESHOLD = 2
 
 
 class ForwardRequestService:
@@ -68,7 +70,8 @@ class ForwardRequestService:
             msg_id: source Planner 刚通过 ``view_forward_message`` 查看过的
                 合并转发消息 ID。
             sharing_reason: Planner 对“为何值得分享”的简短说明，可为空。
-            content_summary: 完整查看缓存失效时使用的忠实摘要，可为空。
+            content_summary: 完整查看缓存确认过期或多次查看失败时使用的忠实
+                摘要，可为空。
             invocation_context: SDK 注入的 Tool 调用上下文。必须提供 QQ
                 ``platform``、``group_id``，以及 ``stream_id`` 或 ``chat_id``。
 
@@ -107,6 +110,8 @@ class ForwardRequestService:
             content_summary,
             message,
         )
+        if isinstance(expanded_content, dict):
+            return expanded_content
 
         state_key = self._build_state_key(
             source_stream_id,
@@ -283,11 +288,12 @@ class ForwardRequestService:
         source_message_id: str,
         content_summary: str,
         message: dict[str, Any],
-    ) -> str:
-        """选择写入目标群上下文的可读完整内容。
+    ) -> str | dict[str, Any]:
+        """选择完整内容，并仅在明确不可推进时允许降级。
 
-        优先级为源群查看缓存、Planner 提供的摘要、Host 消息预览，最后使用
-        固定占位文本。后两种降级会记录日志，但不会阻止原始节点发送。
+        有效缓存始终优先。普通缓存缺失或仅一次已知查看失败会拒绝任务，
+        要求 Planner 重新查看；只有缓存明确过期，或已知失败次数达到固定
+        阈值时，才依次使用 Planner 摘要、Host 消息预览和固定占位文本。
 
         Args:
             source_stream_id: 源消息所属聊天流 ID。
@@ -296,27 +302,44 @@ class ForwardRequestService:
             message: Host 源消息，用于读取 ``processed_plain_text`` 预览。
 
         Returns:
-            非空的目标群可见文本，内容来自上述最高优先级的可用来源。
+            可用时返回非空目标群上下文文本；尚应继续尝试查看时返回
+            ``{"success": False, "content": ...}``，阻止创建转发任务。
         """
 
-        expanded_content = self._view_cache.get(
+        lookup = self._view_cache.lookup(
             source_stream_id,
             source_message_id,
             self.config.behavior.view_cache_ttl_seconds,
         )
-        if expanded_content:
-            return expanded_content
+        if lookup.status is ViewCacheStatus.READY:
+            return lookup.content
+
+        fallback_reason = ""
+        if lookup.status is ViewCacheStatus.EXPIRED:
+            fallback_reason = "完整内容缓存已过期"
+        elif lookup.failure_count >= VIEW_FAILURE_FALLBACK_THRESHOLD:
+            fallback_reason = f"view_forward_message 已连续失败 {lookup.failure_count} 次"
+
+        if not fallback_reason:
+            retry_detail = (
+                "当前只记录到一次查看失败，请再次调用 view_forward_message；成功后再重试转发。"
+                if lookup.failure_count
+                else "尚未取得成功的 view_forward_message 完整内容，请先完成查看后再重试转发。"
+            )
+            return self.failure(retry_detail)
 
         expanded_content = str(content_summary or "").strip()
         if expanded_content:
             self._ctx.logger.info(
-                "完整内容缓存未命中，使用 Planner 摘要: msg_id=%s",
+                "%s，使用 Planner 摘要降级: msg_id=%s",
+                fallback_reason,
                 source_message_id,
             )
             return expanded_content
 
         self._ctx.logger.warning(
-            "完整内容缓存及 Planner 摘要均缺失，使用消息预览: msg_id=%s",
+            "%s，且 Planner 摘要缺失，使用消息预览降级: msg_id=%s",
+            fallback_reason,
             source_message_id,
         )
         return str(message.get("processed_plain_text") or "").strip() or "[合并转发消息]"
