@@ -2,7 +2,7 @@
 
 让 MaiBot 在 source 白名单群聊中看完一则合并转发消息后，自主判断是否值得分享。插件按照 target 白名单顺序发送消息，并在每个目标群中触发 Planner，自主决定是否补充一句看法。
 
-当前版本为 `0.1.7`，基于 MaiBot `1.1.0` 开发，仅面向 SnowLuma Adapter 下的 QQ 群聊进行验证。
+当前版本为 `0.1.8`，基于 MaiBot `1.1.0` 开发，仅面向 SnowLuma Adapter 下的 QQ 群聊进行验证。
 
 ## 安装要求
 
@@ -36,16 +36,16 @@ source 和 target 均只填写 QQ 群号字符串。`target_groups` 的列表顺
 ## 工作流程
 
 1. source 群 Planner 调用内置 `view_forward_message` 查看当前聊天流中的一则合并转发；其内部节点可以最初来自其他群。
-2. Planner 认为内容值得分享时，调用 `request_cross_group_forward`。
+2. Planner 认为内容值得分享时，通过 `tool_search` 发现并调用 deferred Tool `request_cross_group_forward`。
 3. 插件按 `msg_id + source stream` 读取原始合并转发节点，并按 target 白名单顺序创建后台投递。
 4. 每个 target 发送成功后，插件显式写入目标群 Maisaka 上下文。
 5. 启用 `trigger_target_planner` 时，插件强制触发目标群 Planner；Planner 自主决定回复一句看法或保持沉默。
 
-转发 Tool 会在非 source 会话中从 Planner 工具列表移除，处理器也会再次校验 QQ 平台、当前调用群的 source 白名单权限，以及消息是否属于当前 source stream。Source 表示读取并发起分享的群聊，不要求合并转发内容最初由该群产生。Planner 不能通过 Tool 参数指定目标群。
+转发 Tool 默认位于 MaiBot 的 deferred tools 池中。各群 Planner 会看到其简要说明，但只有通过 `tool_search` 发现后才能取得完整参数并调用。处理器会实时校验 QQ 平台、当前调用群的 source 白名单权限，以及消息是否属于当前 source stream；因此 deferred discovery 不是授权边界，非 source 群即使尝试调用也会被拒绝。Source 表示读取并发起分享的群聊，不要求合并转发内容最初由该群产生。Planner 不能通过 Tool 参数指定目标群。
 
 ## 缓存与失败恢复
 
-插件通过 `maisaka.planner.before_request` Hook 缓存源群 `view_forward_message` 的完整结果。缓存未命中时依次使用 Planner 提供的 `content_summary` 和原消息预览降级，不会重复调用查看工具。
+插件通过 `maisaka.planner.before_request` Hook 按当前聊天流缓存 `view_forward_message` 的完整结果，不依赖启动阶段的聊天流列表。缓存未命中时依次使用 Planner 提供的 `content_summary` 和原消息预览降级，不会重复调用查看工具。
 
 每个目标群分别记录以下阶段：
 

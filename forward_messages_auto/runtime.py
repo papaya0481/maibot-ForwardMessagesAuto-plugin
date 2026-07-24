@@ -8,7 +8,7 @@ from typing import Any
 from .cache import ViewResultCache
 from .config import ForwardMessagesAutoConfig, GroupIdList
 from .delivery import ForwardDeliveryService
-from .parsing import PlannerHistoryParser, ToolDefinition
+from .parsing import PlannerHistoryParser
 from .request import ForwardRequestService
 from .state import ForwardStateStore
 from .streams import GroupStreamRegistry
@@ -101,14 +101,14 @@ class ForwardingRuntime:
     async def start(self) -> None:
         """启动运行时并准备处理 Planner 请求。
 
-        启动顺序为恢复投递服务、加载持久化状态、清理过期去重记录、刷新
-        QQ 群聊流索引。完成前不应暴露插件 Tool。
+        启动顺序为恢复投递服务、加载持久化状态和清理过期去重记录。目标
+        聊天流只在实际投递时按群号解析，避免插件加载与 Host 聊天管理器
+        初始化之间产生时序依赖。
         """
 
         self.delivery.resume()
         await self.state.load()
         await self.state.prune(self.config.behavior.dedupe_ttl_seconds)
-        await self._refresh_streams()
 
     async def stop(self) -> None:
         """停止后台投递并保存最终状态。
@@ -123,34 +123,12 @@ class ForwardingRuntime:
     async def reconfigure(self) -> None:
         """应用热更新后的缓存、去重与路由配置。
 
-        方法使用最新配置清理查看缓存和任务状态，并重新读取 QQ 群聊流。
-        正在运行的任务持有创建时的目标快照，不会被本次刷新中途改写。
+        方法使用最新配置清理查看缓存和任务状态。聊天流由投递服务按需解析；
+        正在运行的任务持有创建时的目标快照，不会被本次更新中途改写。
         """
 
         self.view_cache.cleanup(self.config.behavior.view_cache_ttl_seconds)
         await self.state.prune(self.config.behavior.dedupe_ttl_seconds)
-        await self._refresh_streams()
-
-    async def _refresh_streams(self) -> None:
-        """按当前启用状态和 source 白名单刷新聊天流索引。"""
-
-        await self.streams.refresh(
-            self.source_groups(),
-            enabled=self.config.plugin.enabled,
-        )
-
-    def is_source_session(self, session_id: str) -> bool:
-        """判断 Planner 会话是否可以看到自主转发 Tool。
-
-        Args:
-            session_id: Planner 请求所属的 MaiBot 聊天流 ID。
-
-        Returns:
-            仅当插件启用、ID 非空且聊天流属于 source 白名单群时返回
-            ``True``。
-        """
-
-        return self.config.plugin.enabled and bool(session_id) and self.streams.is_source_stream(session_id)
 
     def capture_view_results(self, session_id: str, messages: Any) -> None:
         """从 Planner 历史提取并缓存合并转发完整内容。
@@ -166,19 +144,6 @@ class ForwardingRuntime:
         for message_id, content in PlannerHistoryParser.extract_view_results(messages):
             self.view_cache.put(session_id, message_id, content)
         self.view_cache.cleanup(self.config.behavior.view_cache_ttl_seconds)
-
-    @staticmethod
-    def hide_forward_tool(definitions: list[Any]) -> list[Any]:
-        """从 Planner 工具定义中移除自主转发 Tool。
-
-        Args:
-            definitions: 当前 Planner 可见的工具定义列表。
-
-        Returns:
-            保持其他工具原始顺序的新列表，输入列表本身不被修改。
-        """
-
-        return ToolDefinition.excluding(definitions, FORWARD_TOOL_NAME)
 
     async def request_forward(
         self,

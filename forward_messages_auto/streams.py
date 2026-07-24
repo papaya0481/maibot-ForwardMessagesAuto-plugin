@@ -6,10 +6,10 @@ from typing import Any
 
 
 class GroupStreamRegistry:
-    """维护 QQ 群号到聊天流的索引，并按需创建目标流。"""
+    """按需解析 QQ 群号对应的聊天流，并缓存成功结果。"""
 
     def __init__(self, context: Any) -> None:
-        """创建绑定到当前插件上下文的空聊天流索引。
+        """创建绑定到当前插件上下文的空聊天流缓存。
 
         Args:
             context: MaiBot 注入的 ``PluginContext``。该服务使用其中的
@@ -19,84 +19,15 @@ class GroupStreamRegistry:
 
         self._ctx = context
         self._streams_by_group: dict[str, str] = {}
-        self._source_stream_ids: set[str] = set()
-
-    def is_source_stream(self, stream_id: str) -> bool:
-        """判断聊天流是否对应当前配置允许的 source 群。
-
-        Args:
-            stream_id: 待检查的 MaiBot 聊天流 ID。
-
-        Returns:
-            若最近一次 ``refresh`` 已将该聊天流识别为 source 群则返回
-            ``True``，否则返回 ``False``。
-        """
-
-        return stream_id in self._source_stream_ids
-
-    async def refresh(self, source_group_ids: list[str], *, enabled: bool) -> None:
-        """重新加载 QQ 群聊流，并重建 source 会话索引。
-
-        方法首先清空旧索引。SDK 会将 ``chat.get_group_streams`` 的成功响应
-        解包为列表，本方法也兼容旧版 SDK 的成功包装字典。插件未启用时直接
-        保持空索引；查询异常、Host 拒绝或返回格式异常时记录诊断日志并返回，
-        不向调用方传播这些可恢复错误。
-
-        Args:
-            source_group_ids: 已规范化的 source QQ 群号列表。
-            enabled: 插件是否启用。为 ``False`` 时不会调用聊天能力。
-        """
-
-        self._streams_by_group.clear()
-        self._source_stream_ids.clear()
-        if not enabled:
-            return
-
-        try:
-            result = await self._ctx.chat.get_group_streams(platform="qq")
-        except Exception as exc:
-            self._ctx.logger.warning("读取 QQ 群聊流失败: %s", exc)
-            return
-        if isinstance(result, list):
-            streams = result
-        elif isinstance(result, dict):
-            if not result.get("success", False):
-                self._ctx.logger.warning("读取 QQ 群聊流被拒绝: %s", result.get("error", "未知错误"))
-                return
-            streams = result.get("streams")
-        else:
-            self._ctx.logger.warning(
-                "读取 QQ 群聊流返回格式错误: expected=list|dict actual_type=%s",
-                type(result).__name__,
-            )
-            return
-        if not isinstance(streams, list):
-            self._ctx.logger.warning(
-                "读取 QQ 群聊流返回格式错误: streams_type=%s response_keys=%s",
-                type(streams).__name__,
-                sorted(result) if isinstance(result, dict) else [],
-            )
-            return
-        for stream in streams:
-            self._index_stream(stream)
-        self._source_stream_ids = {
-            stream_id for group_id in source_group_ids if (stream_id := self._streams_by_group.get(group_id))
-        }
-        self._ctx.logger.info(
-            "QQ 群聊流索引已刷新: streams=%d indexed_groups=%d source_configured=%d source_matched=%d",
-            len(streams),
-            len(self._streams_by_group),
-            len(source_group_ids),
-            len(self._source_stream_ids),
-        )
 
     async def resolve(self, group_id: str) -> str:
         """按 QQ 群号解析目标聊天流，必要时创建群聊会话。
 
-        解析顺序为：读取内存索引、调用 ``get_stream_by_group_id``、最后调用
+        解析顺序为：读取内存缓存、调用 ``get_stream_by_group_id``、最后调用
         ``open_session``。SDK 会将这两项 capability 的成功响应解包为聊天流
         字典，本方法也兼容旧版成功包装结构。查询失败允许降级到创建；创建
-        失败会记录日志。
+        失败会记录日志。该流程只在实际投递时运行，不依赖插件启动阶段的
+        全量聊天流快照。
 
         Args:
             group_id: target 白名单中的 QQ 群号字符串。
@@ -131,26 +62,6 @@ class GroupStreamRegistry:
         if stream_id:
             self._streams_by_group[group_id] = stream_id
         return stream_id
-
-    def _index_stream(self, stream: Any) -> None:
-        """将一个有效 QQ 群聊流加入内存索引。
-
-        已存在的群号不会被后续重复项覆盖，从而保持 Host 返回列表中第一条
-        有效记录的优先级。
-
-        Args:
-            stream: ``get_group_streams`` 返回列表中的任意元素。非字典、非 QQ
-                平台或缺少群号/聊天流 ID 的记录会被忽略。
-        """
-
-        if not isinstance(stream, dict):
-            return
-        if str(stream.get("platform") or "").strip().lower() != "qq":
-            return
-        group_id = str(stream.get("group_id") or "").strip()
-        stream_id = str(stream.get("stream_id") or stream.get("session_id") or "").strip()
-        if group_id and stream_id and group_id not in self._streams_by_group:
-            self._streams_by_group[group_id] = stream_id
 
     @staticmethod
     def _extract_stream_id(result: Any) -> str:

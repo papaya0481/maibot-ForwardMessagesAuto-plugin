@@ -6,6 +6,14 @@
 
 ## [Unreleased]
 
+## [0.1.8] - 2026-07-24
+
+### Changed
+
+- 将 `request_cross_group_forward` 从全量可见工具改为 deferred tool，由 Planner 通过 `tool_search` 按需发现。
+- Planner Hook 改为仅按当前聊天流缓存 `view_forward_message` 结果，不再改写工具定义；实际调用权限继续由处理器实时校验。
+- 移除启动阶段的全量群聊流预加载和 source stream 快照，目标聊天流改为实际投递时按群号惰性解析，消除 Host 聊天管理器尚未初始化导致的时序竞态。
+
 ## [0.1.7] - 2026-07-24
 
 ### Fixed
@@ -75,7 +83,8 @@
 - 新增分阶段持久化状态与幂等恢复，避免后续步骤失败时重复发送。
 - 新增测试，覆盖缓存、白名单、消息节点、顺序投递、失败隔离和去重。
 
-[Unreleased]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.7...HEAD
+[Unreleased]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.8...HEAD
+[0.1.8]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.7...v0.1.8
 [0.1.7]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.6...v0.1.7
 [0.1.6]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.4...v0.1.5

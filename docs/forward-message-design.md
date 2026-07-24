@@ -79,7 +79,7 @@ Target 是接收合并转发消息的目标群聊。只有列入 target 白名�
 
 工具不应在一次 Planner RPC 内完成所有目标群投递。验证通过后应创建后台任务并快速返回任务 ID，以避免多个目标群、媒体读取或网络发送导致 Tool 超时。
 
-首版实现的 Tool 名称为 `request_cross_group_forward`。它在 Planner 中直接可见，但插件通过 `maisaka.planner.before_request` Hook 将它从非 source 会话的工具列表中移除；Tool 处理器仍会再次执行完整的白名单和消息归属校验。
+首版实现的 Tool 名称为 `request_cross_group_forward`。它位于 MaiBot 的 deferred tools 池中，Planner 先看到名称和简要说明，需要时通过 `tool_search` 发现完整参数并在后续轮次调用。Tool discovery 不承担授权职责；处理器必须实时执行完整的 QQ 平台、source 群白名单、当前聊天流和消息归属校验。
 
 ### 4.3 顺序投递
 

@@ -120,8 +120,7 @@ class ForwardMessagesAutoPlugin(MaiBotPlugin):
         """创建运行时并完成插件加载准备。
 
         方法装配使用动态配置提供器的 ``ForwardingRuntime``，依次加载状态、
-        清理过期记录和刷新 source 聊天流索引，随后检查版本字段并记录当前
-        启用状态及白名单数量。
+        清理过期记录，随后检查版本字段并记录当前启用状态及白名单数量。
         """
 
         self._runtime = ForwardingRuntime(self.ctx, lambda: self.config)
@@ -190,40 +189,34 @@ class ForwardMessagesAutoPlugin(MaiBotPlugin):
     @HookHandler(
         "maisaka.planner.before_request",
         name="capture_view_forward_result",
-        description="缓存源群已经展开的合并转发内容，并仅在 source 白名单会话暴露转发工具。",
+        description="按当前聊天流缓存 Planner 已经展开的合并转发内容。",
         mode=HookMode.BLOCKING,
         order=HookOrder.LATE,
         timeout_ms=3000,
         error_policy=ErrorPolicy.SKIP,
     )
     async def capture_view_forward_result(self, **kwargs: Any) -> dict[str, Any]:
-        """缓存 source 查看结果，并控制自主转发 Tool 的会话可见性。
+        """按当前聊天流缓存合并转发查看结果。
 
-        source 白名单会话会从 Planner 历史中提取
-        ``view_forward_message`` 结果；其他会话则从工具定义中移除本插件
-        Tool。除 ``tool_definitions`` 的定向筛选外，其余 Hook 参数原样返回。
+        方法从 Planner 历史中提取 ``view_forward_message`` 结果，并以当前
+        ``session_id`` 隔离保存。它不修改工具定义；自主转发 Tool 由 MaiBot
+        的 deferred tool 机制负责发现，调用权限则由处理器按当前 source
+        白名单和消息所属聊天流实时校验。
 
         Args:
             **kwargs: ``maisaka.planner.before_request`` Hook 参数。使用
-                ``session_id`` 判断会话，使用 ``messages`` 提取查看结果，并
-                可更新 ``tool_definitions`` 列表。
+                ``session_id`` 隔离缓存，并使用 ``messages`` 提取查看结果。
 
         Returns:
-            阻塞 Hook 的继续结果：
-            ``{"action": "continue", "modified_kwargs": kwargs}``。
+            阻塞 Hook 的继续结果，所有 Hook 参数保持原样。
 
         Raises:
             RuntimeError: Hook 在 ``on_load`` 初始化运行时前被调用。
         """
 
         session_id = str(kwargs.get("session_id") or "").strip()
-        is_source_session = self.runtime.is_source_session(session_id)
-        if is_source_session:
+        if session_id:
             self.runtime.capture_view_results(session_id, kwargs.get("messages"))
-
-        tool_definitions = kwargs.get("tool_definitions")
-        if isinstance(tool_definitions, list) and not is_source_session:
-            kwargs["tool_definitions"] = self.runtime.hide_forward_tool(tool_definitions)
         return {"action": "continue", "modified_kwargs": kwargs}
 
     @Tool(
@@ -255,7 +248,7 @@ class ForwardMessagesAutoPlugin(MaiBotPlugin):
                 default="",
             ),
         ],
-        visibility="visible",
+        visibility="deferred",
         chat_scope="group",
     )
     async def request_cross_group_forward(

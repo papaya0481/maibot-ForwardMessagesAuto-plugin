@@ -193,19 +193,6 @@ class FakeChatCapability:
 
         self.streams = streams
 
-    async def get_group_streams(self, platform: str = "qq") -> list[dict[str, Any]]:
-        """返回全部预设 QQ 群聊流。
-
-        Args:
-            platform: 待查询平台；测试要求调用方必须传入 ``"qq"``。
-
-        Returns:
-            原始 ``streams`` 列表，模拟 SDK 对成功响应的解包结果。
-        """
-
-        assert platform == "qq"
-        return self.streams
-
     async def get_stream_by_group_id(self, group_id: str, platform: str = "qq") -> dict[str, Any] | None:
         """按群号查找第一条匹配的预设聊天流。
 
@@ -430,7 +417,7 @@ def build_plugin(
         {
             "plugin": {
                 "enabled": True,
-                "version": "0.1.7",
+                "version": "0.1.8",
                 "config_version": "0.1.1",
             },
             "routing": {
@@ -596,29 +583,28 @@ def test_extract_view_forward_results_pairs_tool_call_and_result() -> None:
     assert PlannerHistoryParser.extract_view_results(messages) == [("message-1", "完整展开内容")]
 
 
-def test_forward_tool_component_is_visible_only_in_group_scope() -> None:
-    """验证公开自主转发 Tool 的组件元数据只允许群聊调用。
+def test_forward_tool_component_is_deferred_and_group_scoped() -> None:
+    """验证自主转发 Tool 通过 deferred 池发现且只允许群聊调用。
 
-    期望组件顶层 ``chat_scope`` 为 ``group``，同时保持 ``visibility`` 为
-    ``visible``。该测试防止 SDK 元数据重构后 Tool 被私聊调用，或无法被
-    source Planner 发现。
+    期望组件顶层 ``chat_scope`` 为 ``group``，同时将 ``visibility`` 明确
+    声明为 ``deferred``。该测试防止工具重新全量暴露给 Planner，或被私聊
+    调用。
     """
 
     plugin = ForwardMessagesAutoPlugin()
     plugin.set_plugin_config({})
     component = next(item for item in plugin.get_components() if item["name"] == FORWARD_TOOL_NAME)
     assert component["chat_scope"] == "group"
-    assert component["metadata"]["visibility"] == "visible"
+    assert component["metadata"]["visibility"] == "deferred"
 
 
 @pytest.mark.asyncio
-async def test_group_stream_registry_accepts_sdk_unwrapped_chat_results() -> None:
-    """验证聊天流索引兼容 SDK 解包后的列表和聊天流字典。
+async def test_group_stream_registry_resolves_targets_on_demand() -> None:
+    """验证聊天流注册表只在实际投递时按需解析目标群。
 
-    SDK 会把群聊列表响应解包为 ``list``，并把单个聊天流响应解包为字典。
-    刷新后 source 会话必须可识别；未预加载的已有 target 必须能被按群号
-    查询，未知 target 必须能创建会话。该测试防止把正常 SDK 返回值误判为
-    格式错误，或在实际投递时错误地重复创建聊天流。
+    已有 target 应通过 ``get_stream_by_group_id`` 查询，未知 target 应通过
+    ``open_session`` 创建。该测试防止重新引入依赖启动期全量聊天流快照的
+    时序竞态，也防止把 SDK 解包后的聊天流字典误判为失败。
     """
 
     context = SimpleNamespace(
@@ -631,21 +617,17 @@ async def test_group_stream_registry_accepts_sdk_unwrapped_chat_results() -> Non
         logger=logging.getLogger("test.forward-plugin"),
     )
     registry = GroupStreamRegistry(context)
-    await registry.refresh(["10001"], enabled=True)
-    assert registry.is_source_stream("source-stream") is True
-
-    on_demand_registry = GroupStreamRegistry(context)
-    assert await on_demand_registry.resolve("20001") == "target-a"
-    assert await on_demand_registry.resolve("30001") == "opened-30001"
+    assert await registry.resolve("20001") == "target-a"
+    assert await registry.resolve("30001") == "opened-30001"
 
 
 @pytest.mark.asyncio
-async def test_hook_caches_view_result_and_hides_tool_outside_source(tmp_path: Path) -> None:
-    """验证 Hook 仅在 source 缓存结果，并在其他会话隐藏 Tool。
+async def test_hook_caches_view_result_without_rewriting_tool_definitions(tmp_path: Path) -> None:
+    """验证 Hook 按聊天流缓存查看结果且不再承担工具授权。
 
-    source 会话应缓存 ``forward-message`` 的完整展开内容且保留全部工具；
-    target 会话应只保留无关的 ``reply`` 工具。该测试防止查看缓存跨会话
-    污染，也防止非白名单群获得自主转发入口。
+    即使启动阶段聊天流列表为空，当前会话仍应缓存 ``forward-message`` 的
+    完整展开内容，且工具定义保持原样。另一会话的缓存必须按 session 隔离。
+    该测试防止重新把缓存和 deferred Tool 发现绑定到启动期聊天流快照。
 
     Args:
         tmp_path: pytest 提供的临时数据目录，用于插件加载和卸载状态隔离。
@@ -674,20 +656,22 @@ async def test_hook_caches_view_result_and_hides_tool_outside_source(tmp_path: P
         {"type": "function", "function": {"name": "reply"}},
     ]
 
-    source_result = await plugin.capture_view_forward_result(
-        session_id="source-stream",
+    plugin.ctx.chat.streams.clear()
+    current_result = await plugin.capture_view_forward_result(
+        session_id="current-stream",
         messages=messages,
         tool_definitions=definitions,
     )
-    assert plugin.runtime.view_cache.get("source-stream", "forward-message", 1800) == "完整展开内容"
-    assert len(source_result["modified_kwargs"]["tool_definitions"]) == 2
+    assert plugin.runtime.view_cache.get("current-stream", "forward-message", 1800) == "完整展开内容"
+    assert current_result["modified_kwargs"]["tool_definitions"] == definitions
 
     other_result = await plugin.capture_view_forward_result(
         session_id="target-a",
-        messages=[],
+        messages=messages,
         tool_definitions=definitions,
     )
-    assert [item["function"]["name"] for item in other_result["modified_kwargs"]["tool_definitions"]] == ["reply"]
+    assert plugin.runtime.view_cache.get("target-a", "forward-message", 1800) == "完整展开内容"
+    assert other_result["modified_kwargs"]["tool_definitions"] == definitions
     await plugin.on_unload()
 
 
