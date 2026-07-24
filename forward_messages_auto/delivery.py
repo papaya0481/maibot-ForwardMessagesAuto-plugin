@@ -292,7 +292,7 @@ class ForwardDeliveryService:
             警告并返回 ``False``。
         """
 
-        visible_text = f"[麦麦从其他群聊分享了一则合并转发消息；以下内容已在源群完整展开]\n{job.expanded_content}"
+        visible_text = f"[你从其他群聊分享了一则合并转发消息；以下内容已在源群完整展开]\n{job.expanded_content}"
         result = await self._ctx.maisaka.context.append(
             target_stream_id,
             segments=[job.forward_segment],
