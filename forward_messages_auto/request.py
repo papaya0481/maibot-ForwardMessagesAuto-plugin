@@ -3,15 +3,19 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-import hashlib
 from typing import Any
 
-from .cache import ViewResultCache
 from .config import ForwardMessagesAutoConfig, GroupIdList
 from .delivery import ForwardDeliveryService
-from .models import ForwardJob, TargetStage, ViewCacheStatus, ViewObservationKind
+from .models import (
+    ForwardJob,
+    TargetStage,
+    ViewEligibilityStatus,
+    ViewObservationKind,
+)
 from .parsing import ForwardMessageParser
 from .state import ForwardStateStore
+from .view_context import ViewEligibilityStore
 
 EMPTY_CONTENT_FALLBACK_THRESHOLD = 2
 
@@ -23,7 +27,7 @@ class ForwardRequestService:
         self,
         context: Any,
         config_provider: Callable[[], ForwardMessagesAutoConfig],
-        view_cache: ViewResultCache,
+        view_eligibility: ViewEligibilityStore,
         state: ForwardStateStore,
         delivery: ForwardDeliveryService,
     ) -> None:
@@ -32,14 +36,14 @@ class ForwardRequestService:
         Args:
             context: MaiBot ``PluginContext``，用于读取源消息和记录日志。
             config_provider: 返回最新强类型配置的回调。
-            view_cache: 保存源 Planner 已展开内容的共享缓存。
+            view_eligibility: 保存源 Planner 当前上下文查看资格的共享索引。
             state: 提供幂等完成判断的持久化状态存储。
             delivery: 接收已验证 ``ForwardJob`` 的后台投递服务。
         """
 
         self._ctx = context
         self._config_provider = config_provider
-        self._view_cache = view_cache
+        self._view_eligibility = view_eligibility
         self._state = state
         self._delivery = delivery
 
@@ -70,8 +74,8 @@ class ForwardRequestService:
             msg_id: source Planner 刚通过 ``view_forward_message`` 查看过的
                 合并转发消息 ID。
             sharing_reason: Planner 对“为何值得分享”的简短说明，可为空。
-            content_summary: 完整查看缓存确认过期、连续可重试失败达到阈值
-                或连续两次返回空内容时使用的忠实摘要，可为空。
+            content_summary: 连续可重试失败达到阈值或连续两次返回空内容时
+                使用的忠实摘要，可为空。
             invocation_context: SDK 注入的 Tool 调用上下文。必须提供 QQ
                 ``platform``、``group_id``，以及 ``stream_id`` 或 ``chat_id``。
 
@@ -113,10 +117,9 @@ class ForwardRequestService:
         if isinstance(expanded_content, dict):
             return expanded_content
 
-        state_key = self._build_state_key(
+        state_key = self._state.build_state_key(
             source_stream_id,
             source_message_id,
-            target_group_ids,
         )
         job_id = state_key.rsplit(":", 1)[-1]
         duplicate_result = self._duplicate_result(state_key, job_id, target_group_ids)
@@ -291,10 +294,10 @@ class ForwardRequestService:
     ) -> str | dict[str, Any]:
         """选择完整内容，并仅在明确不可推进时允许降级。
 
-        有效缓存始终优先。参数或消息错误要求修正，非合并转发和未知错误
-        会阻止任务；可重试故障只有连续次数达到配置阈值才允许降级，空内容
-        则允许一次诊断重试。缓存明确过期也允许依次使用 Planner 摘要、
-        Host 消息预览和固定占位文本。
+        当前上下文中的有效成功查看始终优先且不按时间过期。参数或消息错误
+        要求修正，非合并转发和未知错误会阻止任务；可重试故障只有连续次数
+        达到配置阈值才允许降级，空内容则允许一次诊断重试。查看结果已被
+        上下文裁剪时必须重新查看，不能按过期使用摘要。
 
         Args:
             source_stream_id: 源消息所属聊天流 ID。
@@ -307,12 +310,11 @@ class ForwardRequestService:
             ``{"success": False, "content": ...}``，阻止创建转发任务。
         """
 
-        lookup = self._view_cache.lookup(
+        lookup = self._view_eligibility.lookup(
             source_stream_id,
             source_message_id,
-            self.config.behavior.view_cache_ttl_seconds,
         )
-        if lookup.status is ViewCacheStatus.READY:
+        if lookup.status is ViewEligibilityStatus.READY:
             return lookup.content
 
         observation_kind = lookup.last_observation_kind
@@ -332,9 +334,7 @@ class ForwardRequestService:
 
         failure_threshold = self.config.behavior.view_failure_fallback_threshold
         fallback_reason = ""
-        if lookup.status is ViewCacheStatus.EXPIRED:
-            fallback_reason = "完整内容缓存已过期"
-        elif (
+        if (
             observation_kind is ViewObservationKind.RETRYABLE_FAILURE
             and lookup.retryable_failure_count >= failure_threshold
         ):
@@ -390,7 +390,7 @@ class ForwardRequestService:
         开启时要求所有目标达到 ``PLANNER_QUEUED``。
 
         Args:
-            state_key: 当前 source 消息与目标路由的稳定幂等键。
+            state_key: 当前 source stream 与消息 ID 的永久幂等键。
             job_id: 面向日志和 Planner 的短任务 ID。
             target_group_ids: 当前配置生成的目标 QQ 群列表。
 
@@ -417,30 +417,6 @@ class ForwardRequestService:
                 "accepted": False,
             }
         return None
-
-    @staticmethod
-    def _build_state_key(
-        stream_id: str,
-        message_id: str,
-        target_group_ids: list[str],
-    ) -> str:
-        """生成包含 source 消息和目标路由的稳定幂等键。
-
-        目标群会先去重、排序后参与 SHA-256 摘要，因此仅调整同一目标集合的
-        配置顺序不会产生新任务；增加或删除目标会得到不同键。
-
-        Args:
-            stream_id: source 聊天流 ID。
-            message_id: source 合并转发消息 ID。
-            target_group_ids: 当前任务的目标 QQ 群号列表。
-
-        Returns:
-            ``"<stream_id>:<message_id>:<16位摘要>"`` 格式的状态键。
-        """
-
-        route_text = ",".join(sorted(set(target_group_ids)))
-        digest = hashlib.sha256(f"{stream_id}\n{message_id}\n{route_text}".encode()).hexdigest()[:16]
-        return f"{stream_id}:{message_id}:{digest}"
 
     @staticmethod
     def failure(content: str) -> dict[str, Any]:

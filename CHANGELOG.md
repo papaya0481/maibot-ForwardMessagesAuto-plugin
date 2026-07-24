@@ -6,6 +6,23 @@
 
 ## [Unreleased]
 
+## [0.1.12] - 2026-07-24
+
+### Added
+
+- 加载状态时自动将 `v0.1.11` 按 target 路由拆分的旧任务合并为新的 source 消息级永久状态，并保留每个 target 的最高完成阶段。
+
+### Changed
+
+- 查看资格改为每轮根据当前 Planner 上下文全量同步；成功结果仍在上下文时始终有效，被裁剪后立即失效，不再按时间过期或降级。
+- 防重键改为只由 source stream 与 `msg_id` 生成，各 target 阶段永久保存在同一任务下；新增 target 时不再重发已经完成的旧 target。
+- 移除 `behavior.view_cache_ttl_seconds` 和 `behavior.dedupe_ttl_seconds` 配置，配置版本提升至 `0.1.4`。
+
+### Fixed
+
+- 修复 target 路由发生变化时因任务键变化而可能重复发送旧 target 的问题。
+- 修复已离开 Planner 上下文的历史查看结果仍可通过进程缓存继续取得转发资格的问题。
+
 ## [0.1.11] - 2026-07-24
 
 ### Changed
@@ -120,7 +137,8 @@
 - 新增分阶段持久化状态与幂等恢复，避免后续步骤失败时重复发送。
 - 新增测试，覆盖缓存、白名单、消息节点、顺序投递、失败隔离和去重。
 
-[Unreleased]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.11...HEAD
+[Unreleased]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.12...HEAD
+[0.1.12]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.11...v0.1.12
 [0.1.11]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.10...v0.1.11
 [0.1.10]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.9...v0.1.10
 [0.1.9]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.8...v0.1.9

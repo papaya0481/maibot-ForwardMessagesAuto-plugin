@@ -7,8 +7,8 @@ from typing import Any
 
 from maibot_sdk import Field, PluginConfigBase
 
-PLUGIN_VERSION = "0.1.11"
-CONFIG_VERSION = "0.1.3"
+PLUGIN_VERSION = "0.1.12"
+CONFIG_VERSION = "0.1.4"
 
 
 class GroupIdList:
@@ -79,18 +79,10 @@ class BehaviorConfig(PluginConfigBase):
     __ui_icon__ = "message-square-share"
     __ui_order__ = 2
 
-    view_cache_ttl_seconds: int = Field(
-        default=1800,
-        description="view_forward_message 完整内容的缓存秒数",
-    )
     view_failure_fallback_threshold: int = Field(
         default=2,
         ge=1,
         description="允许降级前 view_forward_message 的连续可重试故障次数",
-    )
-    dedupe_ttl_seconds: int = Field(
-        default=604800,
-        description="已处理转发任务的去重记录保留秒数",
     )
     trigger_target_planner: bool = Field(
         default=True,

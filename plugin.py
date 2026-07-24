@@ -119,8 +119,8 @@ class ForwardMessagesAutoPlugin(MaiBotPlugin):
     async def on_load(self) -> None:
         """创建运行时并完成插件加载准备。
 
-        方法装配使用动态配置提供器的 ``ForwardingRuntime``，依次加载状态、
-        清理过期记录，随后检查版本字段并记录当前启用状态及白名单数量。
+        方法装配使用动态配置提供器的 ``ForwardingRuntime``，加载永久防重
+        状态，随后检查版本字段并记录当前启用状态及白名单数量。
         """
 
         self._runtime = ForwardingRuntime(self.ctx, lambda: self.config)
@@ -151,7 +151,10 @@ class ForwardMessagesAutoPlugin(MaiBotPlugin):
         config_data: dict[str, Any],
         version: str,
     ) -> None:
-        """让运行时应用 Runner 已写入的新配置。
+        """确认 Runner 已写入的新配置并记录热更新。
+
+        运行时服务通过动态配置提供器读取白名单和行为字段，不需要清理
+        查看资格或永久防重状态；方法只检查版本并记录更新信息。
 
         Args:
             scope: 配置更新范围，由 MaiBot Runner 提供并写入日志。
@@ -161,8 +164,6 @@ class ForwardMessagesAutoPlugin(MaiBotPlugin):
         """
 
         del config_data
-        if self._runtime is not None:
-            await self._runtime.reconfigure()
         self._warn_for_version_mismatch()
         self.ctx.logger.info("自主跨群转发配置已更新: scope=%s version=%s", scope, version)
 
@@ -189,20 +190,20 @@ class ForwardMessagesAutoPlugin(MaiBotPlugin):
     @HookHandler(
         "maisaka.planner.before_request",
         name="capture_view_forward_result",
-        description="按当前聊天流缓存 Planner 已经展开的合并转发内容。",
+        description="按当前 Planner 上下文同步已经展开的合并转发查看资格。",
         mode=HookMode.BLOCKING,
         order=HookOrder.LATE,
         timeout_ms=3000,
         error_policy=ErrorPolicy.SKIP,
     )
     async def capture_view_forward_result(self, **kwargs: Any) -> dict[str, Any]:
-        """缓存查看结果，并在成功查看后的续轮末尾追加一次判断提醒。
+        """同步上下文查看资格，并在成功查看后的续轮末尾追加判断提醒。
 
         方法从 Planner 历史中提取 ``view_forward_message`` 结果，并以当前
-        ``session_id`` 隔离保存。每个工具调用只处理一次；成功结果会触发
-        一个位于请求末尾的 ``system-reminder``，要求 Planner 立即判断是否
-        值得分享。它不修改工具定义；自主转发 Tool 仍由 MaiBot 的 deferred
-        tool 机制负责发现。
+        ``session_id`` 隔离同步。当前历史中仍可见的成功结果持续有效，
+        被上下文裁剪的结果立即失效；新成功结果会触发一个位于请求末尾的
+        ``system-reminder``，要求 Planner 立即判断是否值得分享。它不修改
+        工具定义；自主转发 Tool 仍由 deferred tool 机制负责发现。
 
         Args:
             **kwargs: ``maisaka.planner.before_request`` Hook 参数。使用
@@ -263,8 +264,8 @@ class ForwardMessagesAutoPlugin(MaiBotPlugin):
         ),
         detailed_description=(
             "仅在你已经成功调用 view_forward_message 查看 msg_id 的全部内容，并自主判断值得分享时调用。"
-            "目标群由插件白名单决定，禁止自行指定目标群。content_summary 只在完整内容确认过期、"
-            "连续可重试故障达到配置阈值或连续两次返回空内容时降级使用。"
+            "该成功查看结果必须仍在当前上下文中；目标群由插件白名单决定，禁止自行指定目标群。"
+            "content_summary 只在连续可重试故障达到配置阈值或连续两次返回空内容时降级使用。"
         ),
         parameters=[
             ToolParameterInfo(
@@ -283,10 +284,7 @@ class ForwardMessagesAutoPlugin(MaiBotPlugin):
             ToolParameterInfo(
                 name="content_summary",
                 param_type=ToolParamType.STRING,
-                description=(
-                    "对完整转发内容的忠实摘要，仅在缓存确认过期、连续可重试故障达到配置阈值"
-                    "或连续两次返回空内容时降级使用"
-                ),
+                description=("对完整转发内容的忠实摘要，仅在连续可重试故障达到配置阈值或连续两次返回空内容时降级使用"),
                 required=False,
                 default="",
             ),
@@ -310,8 +308,8 @@ class ForwardMessagesAutoPlugin(MaiBotPlugin):
         Args:
             msg_id: 刚通过 ``view_forward_message`` 查看过的源消息 ID。
             sharing_reason: Planner 判断内容值得分享的简短理由。
-            content_summary: 查看缓存确认过期、连续可重试故障达到配置阈值
-                或连续两次返回空内容时使用的忠实摘要。
+            content_summary: 连续可重试故障达到配置阈值或连续两次返回
+                空内容时使用的忠实摘要。
             **kwargs: SDK 注入的 Tool 上下文。必须能解析 QQ ``platform``、
                 ``group_id`` 和 ``stream_id`` 或 ``chat_id``。
 

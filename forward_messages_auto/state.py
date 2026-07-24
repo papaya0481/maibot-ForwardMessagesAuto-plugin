@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 from pathlib import Path
 import time
@@ -49,22 +50,21 @@ class ForwardStateStore:
         async with self._lock:
             await asyncio.to_thread(self._save_sync)
 
-    async def prune(self, ttl_seconds: int) -> None:
-        """删除超过去重保留期的任务并立即持久化。
+    @staticmethod
+    def build_state_key(stream_id: str, message_id: str) -> str:
+        """生成不受 target 路由变化影响的永久任务键。
 
         Args:
-            ttl_seconds: 状态保留秒数，小于 60 的值按 60 处理。任务以
-                ``updated_at`` 为准，缺失时回退到 ``created_at``。
+            stream_id: source 聊天流 ID。
+            message_id: source 合并转发消息 ID。
+
+        Returns:
+            ``"forward:<24位摘要>"`` 格式的稳定键。摘要只包含 source
+            stream 与 ``msg_id``，各 target 的永久阶段保存在同一任务下。
         """
 
-        cutoff = time.time() - max(60, int(ttl_seconds))
-        async with self._lock:
-            self._jobs = {
-                key: value
-                for key, value in self._jobs.items()
-                if isinstance(value, dict) and float(value.get("updated_at") or value.get("created_at") or 0) >= cutoff
-            }
-            await asyncio.to_thread(self._save_sync)
+        digest = hashlib.sha256(f"{stream_id}\n{message_id}".encode()).hexdigest()[:24]
+        return f"forward:{digest}"
 
     def is_complete(
         self,
@@ -75,7 +75,7 @@ class ForwardStateStore:
         """判断指定任务的所有目标是否达到要求阶段。
 
         Args:
-            state_key: 由 source stream、消息 ID 和目标路由生成的幂等键。
+            state_key: 由 source stream 和消息 ID 生成的永久幂等键。
             target_group_ids: 当前路由要求覆盖的目标 QQ 群号列表。
             required_stage: 每个目标至少需要达到的阶段；是否触发 Planner
                 会影响调用方选择的阶段。
@@ -119,15 +119,16 @@ class ForwardStateStore:
     async def ensure_job(self, job: ForwardJob) -> None:
         """确保任务元数据存在，并将状态写入磁盘。
 
-        已存在的任务不会被覆盖，因此重试或插件重载能够保留各目标已经完成
-        的阶段。
+        已存在任务的目标列表会合并但不会覆盖阶段，因此新增 target、重试
+        或插件重载都能保留各目标已经完成的阶段。
 
         Args:
             job: 即将执行的不可变转发任务快照。
         """
 
         async with self._lock:
-            self._jobs.setdefault(job.state_key, self._new_job_state(job))
+            job_state = self._jobs.setdefault(job.state_key, self._new_job_state(job))
+            self._merge_job_metadata(job_state, job)
             await asyncio.to_thread(self._save_sync)
 
     async def advance_target(
@@ -149,6 +150,7 @@ class ForwardStateStore:
 
         async with self._lock:
             job_state = self._jobs.setdefault(job.state_key, self._new_job_state(job))
+            self._merge_job_metadata(job_state, job)
             target_states = job_state.setdefault("targets", {})
             current_stage = TargetStage.from_value(str(target_states.get(target_group_id) or "pending"))
             if stage > current_stage:
@@ -179,6 +181,30 @@ class ForwardStateStore:
             "targets": {},
         }
 
+    @staticmethod
+    def _merge_job_metadata(job_state: dict[str, Any], job: ForwardJob) -> None:
+        """把任务快照中的新 target 合并进已有永久状态。
+
+        Args:
+            job_state: 将被原地更新的已持久化任务字典。
+            job: 当前请求生成的任务快照。
+        """
+
+        existing_targets = job_state.get("target_group_ids")
+        target_group_ids = (
+            [str(group_id) for group_id in existing_targets] if isinstance(existing_targets, list) else []
+        )
+        seen = set(target_group_ids)
+        for group_id in job.target_group_ids:
+            if group_id not in seen:
+                target_group_ids.append(group_id)
+                seen.add(group_id)
+        job_state["target_group_ids"] = target_group_ids
+        job_state["job_id"] = job.job_id
+        job_state["source_stream_id"] = job.source_stream_id
+        job_state["source_group_id"] = job.source_group_id
+        job_state["source_message_id"] = job.source_message_id
+
     def _load_sync(self) -> None:
         """同步读取并校验状态文件的顶层任务映射。
 
@@ -196,11 +222,136 @@ class ForwardStateStore:
             self._jobs = {}
             return
         raw_jobs = payload.get("jobs") if isinstance(payload, dict) else None
-        self._jobs = (
+        loaded_jobs = (
             {str(key): value for key, value in raw_jobs.items() if isinstance(value, dict)}
             if isinstance(raw_jobs, dict)
             else {}
         )
+        self._jobs = self._migrate_jobs(loaded_jobs)
+
+    def _migrate_jobs(
+        self,
+        loaded_jobs: dict[str, dict[str, Any]],
+    ) -> dict[str, dict[str, Any]]:
+        """把旧路由级任务合并为 source 消息级永久状态。
+
+        `v0.1.11` 的键包含完整 target 集合，因此路由调整可能产生多个任务。
+        迁移依据每条记录内的 ``source_stream_id`` 和 ``source_message_id``
+        生成新键，并逐 target 保留最高阶段。缺少这两个字段的未知记录保持
+        原键，避免静默丢弃用户状态。
+
+        Args:
+            loaded_jobs: 从状态文件读取并完成顶层类型校验的任务字典。
+
+        Returns:
+            使用新稳定键归并后的任务字典。
+        """
+
+        migrated: dict[str, dict[str, Any]] = {}
+        for original_key, raw_job in loaded_jobs.items():
+            source_stream_id = str(raw_job.get("source_stream_id") or "").strip()
+            source_message_id = str(raw_job.get("source_message_id") or "").strip()
+            if not source_stream_id or not source_message_id:
+                migrated[original_key] = dict(raw_job)
+                continue
+
+            state_key = self.build_state_key(source_stream_id, source_message_id)
+            normalized = self._normalize_loaded_job(raw_job, state_key)
+            existing = migrated.get(state_key)
+            if existing is None:
+                migrated[state_key] = normalized
+            else:
+                self._merge_loaded_job(existing, normalized)
+        return migrated
+
+    @staticmethod
+    def _normalize_loaded_job(
+        raw_job: dict[str, Any],
+        state_key: str,
+    ) -> dict[str, Any]:
+        """规范化一条旧任务并改写为新任务 ID。
+
+        Args:
+            raw_job: 从旧状态文件读取的单条任务字典。
+            state_key: 已根据 source stream 和消息 ID 生成的新键。
+
+        Returns:
+            可写入新版状态文件的浅拷贝，目标列表和阶段映射已经清洗。
+        """
+
+        normalized = dict(raw_job)
+        raw_targets = raw_job.get("targets")
+        targets = (
+            {str(group_id): str(stage) for group_id, stage in raw_targets.items()}
+            if isinstance(raw_targets, dict)
+            else {}
+        )
+        raw_target_ids = raw_job.get("target_group_ids")
+        target_group_ids = [str(group_id) for group_id in raw_target_ids] if isinstance(raw_target_ids, list) else []
+        for group_id in targets:
+            if group_id not in target_group_ids:
+                target_group_ids.append(group_id)
+        normalized["job_id"] = state_key.rsplit(":", 1)[-1]
+        normalized["target_group_ids"] = target_group_ids
+        normalized["targets"] = targets
+        return normalized
+
+    @staticmethod
+    def _merge_loaded_job(
+        destination: dict[str, Any],
+        incoming: dict[str, Any],
+    ) -> None:
+        """把同一 source 消息的另一条旧路由记录合并到目标状态。
+
+        Args:
+            destination: 将被原地更新的新格式任务状态。
+            incoming: 要合并的另一条规范化旧任务状态。
+        """
+
+        destination_targets = destination.setdefault("targets", {})
+        incoming_targets = incoming.get("targets")
+        if isinstance(destination_targets, dict) and isinstance(incoming_targets, dict):
+            for group_id, stage_value in incoming_targets.items():
+                current = TargetStage.from_value(str(destination_targets.get(group_id) or "pending"))
+                incoming_stage = TargetStage.from_value(str(stage_value))
+                if incoming_stage > current:
+                    destination_targets[group_id] = incoming_stage.storage_value
+
+        destination_ids = destination.setdefault("target_group_ids", [])
+        incoming_ids = incoming.get("target_group_ids")
+        if isinstance(destination_ids, list) and isinstance(incoming_ids, list):
+            seen = {str(group_id) for group_id in destination_ids}
+            for group_id in incoming_ids:
+                normalized_group_id = str(group_id)
+                if normalized_group_id not in seen:
+                    destination_ids.append(normalized_group_id)
+                    seen.add(normalized_group_id)
+
+        destination["created_at"] = min(
+            ForwardStateStore._timestamp(destination.get("created_at"), time.time()),
+            ForwardStateStore._timestamp(incoming.get("created_at"), time.time()),
+        )
+        destination["updated_at"] = max(
+            ForwardStateStore._timestamp(destination.get("updated_at"), 0.0),
+            ForwardStateStore._timestamp(incoming.get("updated_at"), 0.0),
+        )
+
+    @staticmethod
+    def _timestamp(value: Any, default: float) -> float:
+        """把状态文件中的时间字段安全转换为浮点数。
+
+        Args:
+            value: 可能来自旧状态文件的任意时间字段值。
+            default: 缺失、非数字或不可转换时采用的回退值。
+
+        Returns:
+            可用于比较的浮点时间戳。
+        """
+
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
 
     def _save_sync(self) -> None:
         """同步地以临时文件替换方式保存状态快照。
@@ -215,7 +366,7 @@ class ForwardStateStore:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         temp_path = self._path.with_suffix(".tmp")
         payload = {
-            "version": 1,
+            "version": 2,
             "updated_at": time.time(),
             "jobs": self._jobs,
         }

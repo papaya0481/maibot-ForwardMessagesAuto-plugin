@@ -38,4 +38,6 @@ def test_manifest_and_default_config_versions_match_source_constants() -> None:
     assert manifest["version"] == PLUGIN_VERSION
     assert default_config["plugin"]["version"] == PLUGIN_VERSION
     assert default_config["plugin"]["config_version"] == CONFIG_VERSION
+    assert "view_cache_ttl_seconds" not in default_config["behavior"]
+    assert "dedupe_ttl_seconds" not in default_config["behavior"]
     assert default_config["behavior"]["view_failure_fallback_threshold"] == 2

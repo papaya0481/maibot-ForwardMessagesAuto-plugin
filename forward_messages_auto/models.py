@@ -45,19 +45,18 @@ class TargetStage(IntEnum):
 
 
 @dataclass(slots=True)
-class ViewCacheEntry:
-    """一次 view_forward_message 的展开结果。"""
+class ViewEligibilityEntry:
+    """当前 Planner 上下文中一次成功查看的展开结果。"""
 
+    call_id: str
     content: str
-    cached_at: float
 
 
-class ViewCacheStatus(str, Enum):
-    """完整查看内容在插件缓存中的状态。"""
+class ViewEligibilityStatus(str, Enum):
+    """指定消息在当前 Planner 上下文中的查看资格状态。"""
 
     READY = "ready"
     MISSING = "missing"
-    EXPIRED = "expired"
 
 
 class ViewObservationKind(str, Enum):
@@ -82,10 +81,10 @@ class ViewFailureState:
 
 
 @dataclass(frozen=True, slots=True)
-class ViewCacheLookup:
-    """一次完整查看缓存查询结果。"""
+class ViewEligibilityLookup:
+    """一次当前上下文查看资格查询结果。"""
 
-    status: ViewCacheStatus
+    status: ViewEligibilityStatus
     content: str
     retryable_failure_count: int
     empty_content_failure_count: int

@@ -5,13 +5,13 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from .cache import ViewResultCache
 from .config import ForwardMessagesAutoConfig, GroupIdList
 from .delivery import ForwardDeliveryService
 from .parsing import PlannerHistoryParser
 from .request import ForwardRequestService
 from .state import ForwardStateStore
 from .streams import GroupStreamRegistry
+from .view_context import ViewEligibilityStore
 
 FORWARD_TOOL_NAME = "request_cross_group_forward"
 
@@ -37,7 +37,7 @@ class ForwardingRuntime:
         """
 
         self._config_provider = config_provider
-        self.view_cache = ViewResultCache()
+        self.view_eligibility = ViewEligibilityStore()
         self._pending_view_judgments: dict[str, set[str]] = {}
         self.streams = GroupStreamRegistry(context)
         self.state = ForwardStateStore(
@@ -53,7 +53,7 @@ class ForwardingRuntime:
         self.requests = ForwardRequestService(
             context,
             config_provider,
-            self.view_cache,
+            self.view_eligibility,
             self.state,
             self.delivery,
         )
@@ -102,14 +102,13 @@ class ForwardingRuntime:
     async def start(self) -> None:
         """启动运行时并准备处理 Planner 请求。
 
-        启动顺序为恢复投递服务、加载持久化状态和清理过期去重记录。目标
-        聊天流只在实际投递时按群号解析，避免插件加载与 Host 聊天管理器
-        初始化之间产生时序依赖。
+        启动顺序为恢复投递服务并加载永久防重状态。目标聊天流只在实际
+        投递时按群号解析，避免插件加载与 Host 聊天管理器初始化之间产生
+        时序依赖。
         """
 
         self.delivery.resume()
         await self.state.load()
-        await self.state.prune(self.config.behavior.dedupe_ttl_seconds)
 
     async def stop(self) -> None:
         """停止后台投递并保存最终状态。
@@ -121,23 +120,13 @@ class ForwardingRuntime:
         await self.delivery.stop()
         await self.state.save()
 
-    async def reconfigure(self) -> None:
-        """应用热更新后的缓存、去重与路由配置。
-
-        方法使用最新配置清理查看缓存和任务状态。聊天流由投递服务按需解析；
-        正在运行的任务持有创建时的目标快照，不会被本次更新中途改写。
-        """
-
-        self.view_cache.cleanup(self.config.behavior.view_cache_ttl_seconds)
-        await self.state.prune(self.config.behavior.dedupe_ttl_seconds)
-
     def capture_view_results(self, session_id: str, messages: Any) -> list[str]:
-        """从 Planner 历史登记新的查看结果并缓存成功内容。
+        """按 Planner 当前历史同步查看资格并登记新的成功结果。
 
-        每个 ``tool_call_id`` 在同一聊天流中只处理一次，避免历史结果在
-        后续 Planner 请求中反复刷新 TTL。失败结果按可重试、空内容、
-        可修正、终止和未知类型保存状态，成功结果才写入缓存，并登记为
-        等待 Planner 立即判断的消息。
+        每轮都用当前消息历史替换该聊天流的旧快照，因此被上下文裁剪的
+        查看结果立即失效。仍可见的成功结果持续合法且不按时间过期；失败
+        结果按可重试、空内容、可修正、终止和未知类型重新计算。每个成功
+        ``tool_call_id`` 只会首次登记为等待 Planner 立即判断的消息。
 
         Args:
             session_id: source Planner 当前聊天流 ID。
@@ -148,20 +137,13 @@ class ForwardingRuntime:
             向紧接着的 Planner 请求追加一次性续轮提醒。
         """
 
-        fresh_message_ids: list[str] = []
-        for observation in PlannerHistoryParser.extract_view_observations(messages):
-            is_fresh_success = self.view_cache.record_observation(
-                session_id,
-                observation.call_id,
-                observation.message_id,
-                observation.content,
-                kind=observation.kind,
-            )
-            if is_fresh_success:
-                fresh_message_ids.append(observation.message_id)
+        observations = PlannerHistoryParser.extract_view_observations(messages)
+        fresh_message_ids = self.view_eligibility.sync_context(
+            session_id,
+            observations,
+        )
         if fresh_message_ids:
             self._pending_view_judgments.setdefault(session_id, set()).update(fresh_message_ids)
-        self.view_cache.cleanup(self.config.behavior.view_cache_ttl_seconds)
         return fresh_message_ids
 
     def build_view_judgment_reminder(self, session_id: str) -> str:
@@ -212,8 +194,8 @@ class ForwardingRuntime:
         Args:
             msg_id: source Planner 已完整查看的合并转发消息 ID。
             sharing_reason: Planner 给出的分享理由，可为空。
-            content_summary: 缓存确认过期、连续可重试故障达到配置阈值或
-                连续两次返回空内容时使用的忠实摘要，可为空。
+            content_summary: 连续可重试故障达到配置阈值或连续两次返回
+                空内容时使用的忠实摘要，可为空。
             invocation_context: SDK 注入的调用上下文；请求服务读取
                 ``platform``、``group_id``、``stream_id`` 或 ``chat_id``。
 

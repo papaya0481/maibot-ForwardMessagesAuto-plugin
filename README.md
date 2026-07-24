@@ -2,7 +2,7 @@
 
 让 MaiBot 在 source 白名单群聊中看完一则合并转发消息后，自主判断是否值得分享。插件按照 target 白名单顺序发送消息，并在每个目标群中触发 Planner，自主决定是否补充一句看法。
 
-当前版本为 `0.1.11`，基于 MaiBot `1.1.0` 开发，仅面向 SnowLuma Adapter 下的 QQ 群聊进行验证。
+当前版本为 `0.1.12`，基于 MaiBot `1.1.0` 开发，仅面向 SnowLuma Adapter 下的 QQ 群聊进行验证。
 
 ## 安装要求
 
@@ -22,9 +22,7 @@ source_groups = ["123456789"]
 target_groups = ["234567890", "345678901"]
 
 [behavior]
-view_cache_ttl_seconds = 1800
 view_failure_fallback_threshold = 2
-dedupe_ttl_seconds = 604800
 trigger_target_planner = true
 ```
 source 和 target 均只填写 QQ 群号字符串。`target_groups` 的列表顺序就是每次任务的发送顺序。未列入白名单的群不能触发或接收自主转发。
@@ -50,21 +48,21 @@ source 和 target 均只填写 QQ 群号字符串。`target_groups` 的列表顺
 
 转发 Tool 默认位于 MaiBot 的 deferred tools 池中。各群 Planner 会看到其简要说明，但只有通过 `tool_search` 发现后才能取得完整参数并调用。处理器会实时校验 QQ 平台、当前调用群的 source 白名单权限，以及消息是否属于当前 source stream；因此 deferred discovery 不是授权边界，非 source 群即使尝试调用也会被拒绝。Source 表示读取并发起分享的群聊，不要求合并转发内容最初由该群产生。Planner 不能通过 Tool 参数指定目标群。
 
-## 缓存与失败恢复
+## 上下文资格与失败恢复
 
-插件通过 `maisaka.planner.before_request` Hook 按当前聊天流缓存
-`view_forward_message` 的完整结果，并按 `tool_call_id` 保证同一次查看不会
-反复刷新缓存 TTL。成功查看后，插件会在紧接着的 Planner 续轮末尾追加
-一次判断提醒；若请求被新消息打断，提醒会保留到 Planner 真正返回为止。
+插件通过 `maisaka.planner.before_request` Hook 按当前聊天流同步
+`view_forward_message` 的完整结果。成功结果只要仍在本轮 Planner 上下文
+中就持续合法，不设置缓存时间或 TTL；被上下文裁剪后立即失效，Planner
+必须重新查看。成功查看后，插件会在紧接着的 Planner 续轮末尾追加一次
+判断提醒；若请求被新消息打断，提醒会保留到 Planner 真正返回为止。
 
-普通缓存缺失或可重试故障尚未达到配置阈值时，转发 Tool 会拒绝创建任务并
-要求 Planner 重新查看。只有连续可重试故障达到
-`view_failure_fallback_threshold`、连续两次返回空内容，或曾经成功缓存但
-已经确认过期时，才会依次使用 Planner 提供的 `content_summary` 和原消息
-预览降级。参数或消息错误必须修正；确认不是合并转发以及无法安全分类的失败
-不会因重复调用开放降级。由于当前 Host 未向 Planner Hook 暴露 ToolResult
-的成功状态，插件暂时依据已知稳定失败文案进行分类；未来主程序改进方向见
-[TODO](docs/TODO.md)。
+当前上下文没有成功查看结果，或可重试故障尚未达到配置阈值时，转发 Tool
+会拒绝创建任务并要求 Planner 重新查看。只有连续可重试故障达到
+`view_failure_fallback_threshold` 或连续两次返回空内容时，才会依次使用
+Planner 提供的 `content_summary` 和原消息预览降级。参数或消息错误必须
+修正；确认不是合并转发以及无法安全分类的失败不会因重复调用开放降级。
+由于当前 Host 未向 Planner Hook 暴露 ToolResult 的成功状态，插件暂时
+依据已知稳定失败文案进行分类；未来主程序改进方向见 [TODO](docs/TODO.md)。
 
 每个目标群分别记录以下阶段：
 
@@ -72,7 +70,11 @@ source 和 target 均只填写 QQ 群号字符串。`target_groups` 的列表顺
 sent → context_appended → planner_queued
 ```
 
-状态保存在 MaiBot 为插件分配的数据目录中。若发送已经成功，但上下文写入或 Planner 入队失败，再次发起同一请求时会从未完成阶段继续，不会重复发送已经成功的合并转发。
+状态按 `source stream + msg_id + target` 永久保存在 MaiBot 为插件分配的
+数据目录中，不按时间清理。若发送已经成功，但上下文写入或 Planner 入队
+失败，再次发起同一请求时会从未完成阶段继续。路由新增 target 时只处理
+新群，不会重复发送已经完成的旧 target。`v0.1.11` 的路由级状态会在加载时
+自动合并到新结构。
 
 单个 target 失败不会阻止后续 target。当前版本只保证发送和主动任务入队按白名单顺序发生；不同目标群的 Planner 可能在入队后并发推理。
 
