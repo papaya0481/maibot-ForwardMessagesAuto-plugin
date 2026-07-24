@@ -10,7 +10,7 @@
 
 Hook 当前收到的 tool 消息只有 `role`、`content` 和 `tool_call_id`，没有
 ToolResult 的 `tool_name`、`success`、`metadata` 或 `structured_content`。
-因此插件无法直接、可靠地区分成功内容和失败文本。`0.1.9` 暂时匹配当前
+因此插件无法直接、可靠地区分成功内容和失败文本。`0.1.9` 起暂时匹配当前
 内置工具与统一工具注册表的稳定失败前缀，这属于兼容性方案，不应成为长期
 协议。
 

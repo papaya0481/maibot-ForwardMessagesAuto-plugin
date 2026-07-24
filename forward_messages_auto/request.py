@@ -13,8 +13,6 @@ from .models import ForwardJob, TargetStage, ViewCacheStatus
 from .parsing import ForwardMessageParser
 from .state import ForwardStateStore
 
-VIEW_FAILURE_FALLBACK_THRESHOLD = 2
-
 
 class ForwardRequestService:
     """校验 Tool 调用、读取源消息并创建幂等任务。"""
@@ -291,9 +289,10 @@ class ForwardRequestService:
     ) -> str | dict[str, Any]:
         """选择完整内容，并仅在明确不可推进时允许降级。
 
-        有效缓存始终优先。普通缓存缺失或仅一次已知查看失败会拒绝任务，
-        要求 Planner 重新查看；只有缓存明确过期，或已知失败次数达到固定
-        阈值时，才依次使用 Planner 摘要、Host 消息预览和固定占位文本。
+        有效缓存始终优先。普通缓存缺失或已知查看失败次数尚未达到配置
+        阈值时会拒绝任务，要求 Planner 重新查看；只有缓存明确过期，或
+        已知失败次数达到配置阈值时，才依次使用 Planner 摘要、Host 消息
+        预览和固定占位文本。
 
         Args:
             source_stream_id: 源消息所属聊天流 ID。
@@ -314,15 +313,17 @@ class ForwardRequestService:
         if lookup.status is ViewCacheStatus.READY:
             return lookup.content
 
+        failure_threshold = self.config.behavior.view_failure_fallback_threshold
         fallback_reason = ""
         if lookup.status is ViewCacheStatus.EXPIRED:
             fallback_reason = "完整内容缓存已过期"
-        elif lookup.failure_count >= VIEW_FAILURE_FALLBACK_THRESHOLD:
+        elif lookup.failure_count >= failure_threshold:
             fallback_reason = f"view_forward_message 已连续失败 {lookup.failure_count} 次"
 
         if not fallback_reason:
             retry_detail = (
-                "当前只记录到一次查看失败，请再次调用 view_forward_message；成功后再重试转发。"
+                f"当前记录到 {lookup.failure_count} 次 view_forward_message 失败，"
+                f"尚未达到允许降级的配置阈值 {failure_threshold} 次；请再次查看，成功后再重试转发。"
                 if lookup.failure_count
                 else "尚未取得成功的 view_forward_message 完整内容，请先完成查看后再重试转发。"
             )

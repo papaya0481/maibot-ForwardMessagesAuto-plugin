@@ -6,6 +6,17 @@
 
 ## [Unreleased]
 
+## [0.1.10] - 2026-07-24
+
+### Added
+
+- 新增 `behavior.view_failure_fallback_threshold` 配置项，默认值为 `2`，最小值为 `1`。
+
+### Changed
+
+- 连续查看失败的降级门槛改为实时读取插件配置，不再由请求服务硬编码。
+- 配置版本提升至 `0.1.2`。
+
 ## [0.1.9] - 2026-07-24
 
 ### Changed
@@ -96,7 +107,8 @@
 - 新增分阶段持久化状态与幂等恢复，避免后续步骤失败时重复发送。
 - 新增测试，覆盖缓存、白名单、消息节点、顺序投递、失败隔离和去重。
 
-[Unreleased]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.9...HEAD
+[Unreleased]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.10...HEAD
+[0.1.10]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.9...v0.1.10
 [0.1.9]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.8...v0.1.9
 [0.1.8]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.7...v0.1.8
 [0.1.7]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.6...v0.1.7

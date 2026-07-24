@@ -143,7 +143,8 @@ Planner 的前一个工具结果不会直接成为后续插件 Tool 的参数。
 并要求 Planner 再次调用 `view_forward_message`。只有满足以下任一条件时
 才允许依次使用 `content_summary`、原消息预览和固定占位文本降级：
 
-- 同一 source stream 与 `msg_id` 的已知查看失败累计达到两次；
+- 同一 source stream 与 `msg_id` 的已知查看失败累计达到配置项
+  `behavior.view_failure_fallback_threshold`；默认值为 `2`，最小值为 `1`；
 - 曾经成功缓存的完整内容已经确认超过 TTL。
 
 降级不阻止原始合并转发节点发送，但必须在任务日志中说明原因和实际采用的
@@ -190,6 +191,12 @@ config_version = ""
 [routing]
 source_groups = ["123456789", "234567890"]
 target_groups = ["345678901", "456789012"]
+
+[behavior]
+view_cache_ttl_seconds = 1800
+view_failure_fallback_threshold = 2
+dedupe_ttl_seconds = 604800
+trigger_target_planner = true
 ```
 
 群号使用字符串保存，避免配置解析或数值类型差异。`target_groups` 的排列顺序就是转发处理顺序。具体字段声明可以在实现阶段根据 maibot-plugin-sdk 的配置模型调整，但必须保持：
@@ -253,8 +260,9 @@ target_groups = ["345678901", "456789012"]
 - 非合并转发消息拒绝；
 - `msg_id` 不属于 source stream 时拒绝；
 - `view_forward_message` ToolResult 缓存提取与 TTL；
-- 普通缓存未命中和首次查看失败时拒绝降级；
-- 连续两次查看失败或缓存确认过期时允许摘要降级；
+- 普通缓存未命中和失败次数未达到配置阈值时拒绝降级；
+- 查看失败达到配置阈值或缓存确认过期时允许摘要降级；
+- 自定义 `view_failure_fallback_threshold` 会改变允许降级的失败次数；
 - 成功查看后续轮提醒在 Planner 被新消息打断时不会丢失；
 - 原始转发节点到 `ctx.send.forward` 参数转换；
 - 同一消息重复调用时的幂等处理；

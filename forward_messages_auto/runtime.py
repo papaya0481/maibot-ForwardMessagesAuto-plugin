@@ -211,8 +211,8 @@ class ForwardingRuntime:
         Args:
             msg_id: source Planner 已完整查看的合并转发消息 ID。
             sharing_reason: Planner 给出的分享理由，可为空。
-            content_summary: 缓存确认过期或多次查看失败时使用的忠实摘要，
-                可为空。
+            content_summary: 缓存确认过期或查看失败达到配置阈值时使用的
+                忠实摘要，可为空。
             invocation_context: SDK 注入的调用上下文；请求服务读取
                 ``platform``、``group_id``、``stream_id`` 或 ``chat_id``。
 

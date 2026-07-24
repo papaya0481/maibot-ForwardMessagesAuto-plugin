@@ -403,6 +403,7 @@ def build_plugin(
     *,
     failed_streams: set[str] | None = None,
     failed_context_streams: set[str] | None = None,
+    view_failure_fallback_threshold: int = 2,
 ) -> ForwardMessagesAutoPlugin:
     """构造启用状态下、带一个 source 和两个 target 的插件。
 
@@ -410,6 +411,8 @@ def build_plugin(
         tmp_path: pytest 提供的临时目录，用于隔离持久化状态文件。
         failed_streams: 应由发送能力模拟失败的目标聊天流集合。
         failed_context_streams: 应由上下文能力模拟失败的目标聊天流集合。
+        view_failure_fallback_threshold: 允许摘要或预览降级前，同一消息需要
+            累计的查看失败次数。
 
     Returns:
         已注入强类型配置和 ``FakeContext``、但尚未调用 ``on_load`` 的插件。
@@ -420,8 +423,8 @@ def build_plugin(
         {
             "plugin": {
                 "enabled": True,
-                "version": "0.1.9",
-                "config_version": "0.1.1",
+                "version": "0.1.10",
+                "config_version": "0.1.2",
             },
             "routing": {
                 "source_groups": ["10001"],
@@ -429,6 +432,7 @@ def build_plugin(
             },
             "behavior": {
                 "view_cache_ttl_seconds": 1800,
+                "view_failure_fallback_threshold": view_failure_fallback_threshold,
                 "dedupe_ttl_seconds": 604800,
                 "trigger_target_planner": True,
             },
@@ -847,7 +851,7 @@ async def test_tool_rejects_unviewed_and_single_failure_before_fallback(tmp_path
         stream_id="source-stream",
     )
     assert first_failure_result["success"] is False
-    assert "再次调用 view_forward_message" in first_failure_result["content"]
+    assert "配置阈值 2 次" in first_failure_result["content"]
     assert plugin.ctx.events == []
 
     plugin.runtime.view_cache.record_observation(
@@ -868,6 +872,60 @@ async def test_tool_rejects_unviewed_and_single_failure_before_fallback(tmp_path
     assert fallback_result["accepted"] is True
     await wait_for_background_tasks(plugin)
     assert "两次失败后的降级摘要" in plugin.ctx.maisaka.context.visible_text_by_stream["target-a"]
+    await plugin.on_unload()
+
+
+@pytest.mark.asyncio
+async def test_tool_uses_configured_view_failure_fallback_threshold(tmp_path: Path) -> None:
+    """验证自定义连续失败阈值会实时控制何时允许降级。
+
+    将阈值配置为三次后，前两次查看失败仍应拒绝转发并报告当前阈值；第三次
+    失败后才接受摘要降级。该测试防止请求服务重新使用硬编码次数。
+
+    Args:
+        tmp_path: pytest 提供的隔离状态目录，用于运行真实请求和后台投递。
+    """
+
+    plugin = build_plugin(tmp_path, view_failure_fallback_threshold=3)
+    await plugin.on_load()
+    for failure_index in range(1, 3):
+        plugin.runtime.view_cache.record_observation(
+            "source-stream",
+            f"failure-{failure_index}",
+            "forward-message",
+            "查看转发消息完整内容时发生异常。",
+            failed=True,
+        )
+
+    before_threshold = await plugin.request_cross_group_forward(
+        "forward-message",
+        content_summary="两次失败时不应使用的摘要",
+        platform="qq",
+        group_id="10001",
+        stream_id="source-stream",
+    )
+    assert before_threshold["success"] is False
+    assert "配置阈值 3 次" in before_threshold["content"]
+    assert plugin.ctx.events == []
+
+    plugin.runtime.view_cache.record_observation(
+        "source-stream",
+        "failure-3",
+        "forward-message",
+        "查看转发消息完整内容时发生异常。",
+        failed=True,
+    )
+    at_threshold = await plugin.request_cross_group_forward(
+        "forward-message",
+        content_summary="三次失败后的降级摘要",
+        platform="qq",
+        group_id="10001",
+        stream_id="source-stream",
+    )
+    assert at_threshold["success"] is True
+    assert at_threshold["accepted"] is True
+    await wait_for_background_tasks(plugin)
+    assert "三次失败后的降级摘要" in plugin.ctx.maisaka.context.visible_text_by_stream["target-a"]
     await plugin.on_unload()
 
 
