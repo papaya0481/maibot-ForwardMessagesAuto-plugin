@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from collections import OrderedDict
-
 from .models import (
     ViewEligibilityEntry,
     ViewEligibilityLookup,
@@ -12,8 +10,6 @@ from .models import (
     ViewObservationKind,
 )
 from .parsing import ViewToolObservation
-
-MAX_PROCESSED_VIEW_CALLS = 4096
 
 
 class ViewEligibilityStore:
@@ -29,7 +25,7 @@ class ViewEligibilityStore:
 
         self._entries: dict[tuple[str, str], ViewEligibilityEntry] = {}
         self._failure_states: dict[tuple[str, str], ViewFailureState] = {}
-        self._processed_calls: OrderedDict[tuple[str, str], None] = OrderedDict()
+        self._processed_calls_by_stream: dict[str, set[str]] = {}
 
     def sync_context(
         self,
@@ -52,6 +48,10 @@ class ViewEligibilityStore:
         """
 
         self._remove_stream_snapshot(stream_id)
+        previous_context_calls = self._processed_calls_by_stream.get(
+            stream_id,
+            set(),
+        )
         grouped: dict[str, list[ViewToolObservation]] = {}
         fresh_success_ids: list[str] = []
         seen_fresh_message_ids: set[str] = set()
@@ -62,10 +62,7 @@ class ViewEligibilityStore:
                 continue
             seen_context_calls.add(observation.call_id)
             grouped.setdefault(observation.message_id, []).append(observation)
-            processed_key = (stream_id, observation.call_id)
-            is_fresh = processed_key not in self._processed_calls
-            self._processed_calls[processed_key] = None
-            self._processed_calls.move_to_end(processed_key)
+            is_fresh = observation.call_id not in previous_context_calls
             if (
                 is_fresh
                 and observation.kind is ViewObservationKind.SUCCESS
@@ -74,8 +71,10 @@ class ViewEligibilityStore:
                 fresh_success_ids.append(observation.message_id)
                 seen_fresh_message_ids.add(observation.message_id)
 
-        while len(self._processed_calls) > MAX_PROCESSED_VIEW_CALLS:
-            self._processed_calls.popitem(last=False)
+        if seen_context_calls:
+            self._processed_calls_by_stream[stream_id] = seen_context_calls
+        else:
+            self._processed_calls_by_stream.pop(stream_id, None)
 
         for message_id, message_observations in grouped.items():
             key = (stream_id, message_id)

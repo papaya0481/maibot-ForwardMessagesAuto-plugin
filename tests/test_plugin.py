@@ -820,6 +820,38 @@ def test_view_eligibility_follows_current_context_and_classifies_failures() -> N
     assert corrected_lookup.last_observation_kind is ViewObservationKind.CORRECTABLE_FAILURE
 
 
+def test_view_freshness_is_not_evicted_by_other_stream_activity() -> None:
+    """验证高活跃聊天流不会驱逐其他流仍在上下文中的 fresh 状态。
+
+    安静流先登记一个成功查看调用，再让另一聊天流同步超过旧全局 LRU 容量
+    的独立调用。安静流重新同步相同上下文时不应把旧调用再次报告为 fresh。
+    该测试防止跨流容量竞争导致 Planner 重复收到已经消费过的判断提醒。
+    """
+
+    store = ViewEligibilityStore()
+    quiet_success = ViewToolObservation(
+        call_id="quiet-call",
+        message_id="quiet-message",
+        content="安静流完整内容",
+        kind=ViewObservationKind.SUCCESS,
+    )
+    assert store.sync_context("quiet-stream", [quiet_success]) == ["quiet-message"]
+
+    busy_observations = [
+        ViewToolObservation(
+            call_id=f"busy-call-{index}",
+            message_id=f"busy-message-{index}",
+            content=f"活跃流内容 {index}",
+            kind=ViewObservationKind.SUCCESS,
+        )
+        for index in range(4097)
+    ]
+    store.sync_context("busy-stream", busy_observations)
+
+    assert store.sync_context("quiet-stream", [quiet_success]) == []
+    assert store.lookup("quiet-stream", "quiet-message").status is ViewEligibilityStatus.READY
+
+
 def test_forward_tool_component_is_deferred_and_group_scoped() -> None:
     """验证自主转发 Tool 的 deferred 声明、群聊范围和首次暴露描述。
 
