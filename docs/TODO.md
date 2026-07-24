@@ -18,6 +18,7 @@
 | --- | --- | --- | --- | --- |
 | `TODO-001` | 由 Host 向 Planner Hook 暴露结构化 ToolResult 状态 | 等待上游 | MaiBot Host | 中 |
 | `TODO-002` | 将未消费的成功查看结果保留至当前决策结束 | 等待上游 | MaiBot Host | 低 |
+| `TODO-003` | 让发送能力返回目标消息并可靠同步至 Maisaka 历史 | 等待上游 | MaiBot Host / SDK | 高 |
 
 ## 待办事项
 
@@ -128,6 +129,67 @@ tool call 与 ToolResult；不得只注入一段声称“已经查看”的提�
 - 不同聊天流和不同 `msg_id` 之间不会共享查看资格；
 - 内容超过模型预算时明确要求重新查看，不静默使用摘要降级；
 - 现有“结果不在实际上下文中即无转发资格”的安全边界不被绕过。
+
+### TODO-003：让发送能力返回目标消息并可靠同步至 Maisaka 历史
+
+- 状态：等待上游
+- 依赖：MaiBot Host / maibot-plugin-sdk
+- 优先级：高
+- 临时兼容版本：插件 `0.1.14` 起
+
+#### 背景
+
+插件把 source 群中的合并转发发送到 target 群后，目标平台会分配新的消息
+ID。当前 `send.forward` 与其他 `send.*` SDK 方法只返回发送成功布尔值，
+Host 的 `send.forward` capability 也会丢弃底层最终 `SessionMessage`，因此
+插件无法取得目标群消息 ID。
+
+目标群 Planner 的 `reply` 工具只能按当前 Maisaka 历史中的消息 ID 查找真实
+`original_message`。插件通过 `maisaka.context.append` 写入的展开内容属于
+合成上下文，即使指定稳定 `message_id` 也没有 `original_message`，不能作为
+回复目标。
+
+Host 已支持 `sync_to_maisaka_history=True`，并会在平台成功回执后把目标消息
+ID 回填到最终 `SessionMessage`。但同步逻辑只查找已经存在的 Maisaka
+runtime；冷启动 target 在发送时尚无 runtime，会静默跳过同步。插件随后
+调用 `context.append` 虽能创建 runtime，却已错过真实发送消息。
+
+#### 当前临时方案
+
+插件 `0.1.14` 起开启 `send.forward` 的 Maisaka 历史同步，并从主动任务
+metadata 中移除 source 消息 ID。Planner 仅被允许选择目标群上下文中刚刚
+真实发送的合并转发消息，不得使用 source ID 或 `cross-forward` 合成上下文
+ID。
+
+该方案可覆盖 target runtime 已经存在的常见路径，但不保证冷启动 target。
+插件继续保持“物理发送成功后才注入上下文”的顺序，避免发送失败时留下虚假
+分享上下文。
+
+#### 上游实施方向
+
+1. 为发送能力提供向后兼容的详细结果接口或可选模式，至少返回
+   `success`、最终目标 `message_id`，多驱动场景还应明确主回执及其他成功
+   回执的消息 ID；不能直接破坏现有 SDK `send.* -> bool` 契约。
+2. 当 `sync_to_maisaka_history=True` 时，由 Host 确保目标 Maisaka runtime
+   已创建，再把平台回执更新后的真实 `SessionMessage` 写入历史；或者提供
+   无上下文副作用的 `maisaka.runtime.ensure` capability。
+3. 历史项必须通过 `SessionBackedMessage.from_session_message` 构造，保留
+   `original_message`，使 `reply.find_source_message_by_id()` 可以定位。
+4. 上游能力可用后，插件应持久化每个 target 的 `target_message_id`，并仅将
+   该目标 ID 作为主动任务的回复锚点；重载恢复时不得退回 source ID。
+5. 为旧 Host 保留能力探测和兼容分支，直到插件最低 Host / SDK 版本允许
+   移除。
+
+#### 验收条件
+
+- target Maisaka runtime 在发送前不存在时，成功发送的真实消息仍会进入其
+  历史，并带平台最终消息 ID 与非空 `original_message`；
+- `send.forward` 调用方能够取得与历史项一致的目标消息 ID；
+- 目标 Planner 使用该 ID 调用 `reply` 时可以正常生成并发送回复；
+- source 与 target 消息 ID 在接口、日志和主动任务 metadata 中语义明确，
+  不会跨聊天流混用；
+- 发送失败时不创建虚假目标上下文，重试也不会重复物理发送；
+- 单驱动、多驱动、冷启动 runtime 和插件重载恢复路径均有 Host 级测试。
 
 ## 新增 TODO 模板
 

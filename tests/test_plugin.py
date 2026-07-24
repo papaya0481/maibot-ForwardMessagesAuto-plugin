@@ -277,14 +277,14 @@ class FakeSendCapability:
             messages: 传给 ``ctx.send.forward`` 的规范化转发节点。
             stream_id: 接收消息的目标聊天流 ID。
             **kwargs: 发送选项；测试会断言
-                ``sync_to_maisaka_history`` 为 ``False``。
+                ``sync_to_maisaka_history`` 为 ``True``。
 
         Returns:
             目标位于 ``failed_streams`` 时返回模拟失败字典，否则返回
             ``{"success": True}``。
         """
 
-        assert kwargs["sync_to_maisaka_history"] is False
+        assert kwargs["sync_to_maisaka_history"] is True
         self.events.append(("send", stream_id))
         self.messages_by_stream[stream_id] = messages
         if stream_id in self.failed_streams:
@@ -348,6 +348,8 @@ class FakeMaisakaProactiveCapability:
         """
 
         self.events = events
+        self.intents_by_stream: dict[str, str] = {}
+        self.metadata_by_stream: dict[str, dict[str, Any]] = {}
 
     async def trigger(self, stream_id: str, intent: str, **kwargs: Any) -> dict[str, Any]:
         """验证无需重复查看的意图并模拟主动任务入队。
@@ -355,14 +357,18 @@ class FakeMaisakaProactiveCapability:
         Args:
             stream_id: 要触发 Planner 的目标聊天流 ID。
             intent: 投递服务生成的 Planner 意图文本。
-            **kwargs: 本测试替身忽略的 reason、priority 和 metadata。
+            **kwargs: 主动任务的 reason、priority 和 metadata；测试保存
+                metadata 以验证不会向目标 Planner 暴露源群消息 ID。
 
         Returns:
             包含 ``success=True``、``queued=True`` 和可预测任务 ID 的字典。
         """
 
-        del kwargs
         assert "无需再次调用 view_forward_message" in intent
+        metadata = kwargs.get("metadata")
+        assert isinstance(metadata, dict)
+        self.intents_by_stream[stream_id] = intent
+        self.metadata_by_stream[stream_id] = metadata
         self.events.append(("planner", stream_id))
         return {"success": True, "queued": True, "task_id": f"task-{stream_id}"}
 
@@ -430,7 +436,7 @@ def build_plugin(
         {
             "plugin": {
                 "enabled": True,
-                "version": "0.1.13",
+                "version": "0.1.14",
                 "config_version": "0.1.4",
             },
             "routing": {
@@ -1334,6 +1340,14 @@ async def test_tool_sends_targets_in_order_and_deduplicates(tmp_path: Path) -> N
         ("planner", "target-b"),
     ]
     assert "完整展开内容" in plugin.ctx.maisaka.context.visible_text_by_stream["target-a"]
+    assert plugin.ctx.maisaka.proactive.metadata_by_stream["target-a"] == {
+        "job_id": result["job_id"],
+    }
+    assert "source_message_id" not in plugin.ctx.maisaka.proactive.metadata_by_stream["target-a"]
+    target_intent = plugin.ctx.maisaka.proactive.intents_by_stream["target-a"]
+    assert "使用它在本群中的 msg_id" in target_intent
+    assert "不要使用源群消息 ID" in target_intent
+    assert "cross-forward" in target_intent
     assert plugin.ctx.message.calls == [("forward-message", "source-stream", True)]
 
     repeated = await plugin.request_cross_group_forward(

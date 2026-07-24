@@ -238,8 +238,10 @@ class ForwardDeliveryService:
     ) -> bool:
         """将原始合并转发节点发送到目标聊天流。
 
-        发送时关闭 Maisaka 历史隐式同步，因为下一阶段会显式写入源群已经
-        展开的内容。只有 capability 成功后才持久化 ``SENT`` 阶段。
+        发送时开启 Maisaka 历史同步，使 Host 在目标群 runtime 已存在时把
+        带目标平台消息 ID 的真实发送消息写入历史，供 Planner 的 ``reply``
+        工具定位。下一阶段仍显式写入源群已经展开的内容；只有 capability
+        成功后才持久化 ``SENT`` 阶段。
 
         Args:
             job: 提供发送节点、任务 ID 和来源元数据的任务快照。
@@ -256,7 +258,7 @@ class ForwardDeliveryService:
             target_stream_id,
             processed_plain_text="[跨群分享的合并转发消息]",
             storage_message=True,
-            sync_to_maisaka_history=False,
+            sync_to_maisaka_history=True,
             maisaka_source_kind=f"cross_group_forward:{job.job_id}",
         )
         if not CapabilityResult.succeeded(result):
@@ -324,11 +326,13 @@ class ForwardDeliveryService:
         """强制触发目标群 Planner 自主决定评论或沉默。
 
         意图明确告知 Planner 完整内容已经进入上下文，并要求结合本群语境
-        自主判断，而非机械复述。capability 失败只记录警告；成功后推进到
+        自主判断，而非机械复述。若决定评论，只允许选择目标群上下文中刚刚
+        真实发送的合并转发消息作为 ``reply`` 目标；主动任务不暴露源群消息
+        ID，避免跨聊天流误用。capability 失败只记录警告；成功后推进到
         ``PLANNER_QUEUED``。
 
         Args:
-            job: 提供分享理由、source 消息 ID 和任务 ID 的任务快照。
+            job: 提供分享理由和任务 ID 的任务快照。
             target_group_id: 用于日志和阶段状态的目标 QQ 群号。
             target_stream_id: 要触发主动任务的目标聊天流 ID。
         """
@@ -337,6 +341,8 @@ class ForwardDeliveryService:
             "你刚刚把一则来自其他群聊的合并转发分享到了本群。"
             "消息完整内容已经写入当前上下文，无需再次调用 view_forward_message。"
             "请结合本群近期聊天、群友关系、记忆和你的表达习惯，自主决定是否发表一句自然的整体看法；"
+            "如果决定发表看法，调用 reply 时必须选择当前上下文中由你刚刚实际发送的那则合并转发消息，"
+            "使用它在本群中的 msg_id；不要使用源群消息 ID，也不要选择插件追加的 cross-forward 上下文消息。"
             "如果没有合适或有价值的话可说，就保持沉默。不要机械复述消息，也不要暴露插件内部流程。"
         )
         result = await self._ctx.maisaka.proactive.trigger(
@@ -344,10 +350,7 @@ class ForwardDeliveryService:
             intent=intent,
             reason=job.sharing_reason or "源群 Planner 判断这则内容值得分享",
             priority="normal",
-            metadata={
-                "job_id": job.job_id,
-                "source_message_id": job.source_message_id,
-            },
+            metadata={"job_id": job.job_id},
         )
         if not CapabilityResult.succeeded(result):
             self._ctx.logger.warning(

@@ -6,6 +6,21 @@
 
 ## [Unreleased]
 
+## [0.1.14] - 2026-07-24
+
+### Added
+
+- 新增目标消息 ID 与冷启动 Maisaka 历史同步 TODO，记录 Host / SDK 后续兼容增强方案。
+
+### Changed
+
+- 合并转发发送成功后请求 Host 将带目标群消息 ID 的真实消息同步至 Maisaka 历史，供目标 Planner 的 `reply` 工具定位。
+- 目标 Planner 意图明确只可回复本群刚发送的合并转发消息，不得选择源群消息 ID 或插件合成上下文 ID。
+
+### Fixed
+
+- 修复主动任务 metadata 暴露 source 群 `msg_id`、导致目标 Planner 使用跨聊天流消息 ID 调用 `reply` 的问题。
+
 ## [0.1.13] - 2026-07-24
 
 ### Added
@@ -153,7 +168,8 @@
 - 新增分阶段持久化状态与幂等恢复，避免后续步骤失败时重复发送。
 - 新增测试，覆盖缓存、白名单、消息节点、顺序投递、失败隔离和去重。
 
-[Unreleased]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.13...HEAD
+[Unreleased]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.14...HEAD
+[0.1.14]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.13...v0.1.14
 [0.1.13]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.12...v0.1.13
 [0.1.12]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.11...v0.1.12
 [0.1.11]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.10...v0.1.11

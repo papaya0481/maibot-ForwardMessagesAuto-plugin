@@ -2,7 +2,7 @@
 
 让 MaiBot 在 source 白名单群聊中看完一则合并转发消息后，自主判断是否值得分享。插件按照 target 白名单顺序发送消息，并在每个目标群中触发 Planner，自主决定是否补充一句看法。
 
-当前版本为 `0.1.13`，基于 MaiBot `1.1.0` 开发，仅面向 SnowLuma Adapter 下的 QQ 群聊进行验证。
+当前版本为 `0.1.14`，基于 MaiBot `1.1.0` 开发，仅面向 SnowLuma Adapter 下的 QQ 群聊进行验证。
 
 ## 安装要求
 
@@ -43,8 +43,11 @@ source 和 target 均只填写 QQ 群号字符串。`target_groups` 的列表顺
 1. source 群 Planner 调用内置 `view_forward_message` 查看当前聊天流中的一则合并转发；其内部节点可以最初来自其他群。
 2. Planner 认为内容值得分享时，通过 `tool_search` 发现并调用 deferred Tool `request_cross_group_forward`。
 3. 插件按 `msg_id + source stream` 读取原始合并转发节点，并按 target 白名单顺序创建后台投递。
-4. 每个 target 发送成功后，插件显式写入目标群 Maisaka 上下文。
-5. 启用 `trigger_target_planner` 时，插件强制触发目标群 Planner；Planner 自主决定回复一句看法或保持沉默。
+4. 每个 target 发送时请求 Host 将带目标群消息 ID 的真实发送消息同步到
+   Maisaka 历史；发送成功后，插件再显式写入已经展开的完整内容。
+5. 启用 `trigger_target_planner` 时，插件强制触发目标群 Planner；Planner
+   自主决定回复刚发送的合并转发或保持沉默。主动任务不会把源群消息 ID
+   暴露为回复目标。
 
 转发 Tool 默认位于 MaiBot 的 deferred tools 池中。各群 Planner 会看到其简要说明，但只有通过 `tool_search` 发现后才能取得完整参数并调用。处理器会实时校验 QQ 平台、当前调用群的 source 白名单权限，以及消息是否属于当前 source stream；因此 deferred discovery 不是授权边界，非 source 群即使尝试调用也会被拒绝。Source 表示读取并发起分享的群聊，不要求合并转发内容最初由该群产生。Planner 不能通过 Tool 参数指定目标群。
 
@@ -77,6 +80,11 @@ sent → context_appended → planner_queued
 自动合并到新结构。
 
 单个 target 失败不会阻止后续 target。当前版本只保证发送和主动任务入队按白名单顺序发生；不同目标群的 Planner 可能在入队后并发推理。
+
+当前 Host 仅在目标群 Maisaka runtime 已经存在时同步真实发送消息；冷启动
+目标群仍可能缺少可供 `reply` 定位的真实消息。插件不会为规避该限制而在
+物理发送前注入上下文，以免发送失败时留下虚假分享记录。所需 Host 改进见
+[TODO-003](docs/TODO.md#todo-003让发送能力返回目标消息并可靠同步至-maisaka-历史)。
 
 ## 测试
 
