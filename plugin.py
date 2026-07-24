@@ -221,7 +221,9 @@ class ForwardMessagesAutoPlugin(MaiBotPlugin):
 
     @Tool(
         FORWARD_TOOL_NAME,
-        brief_description="把已经完整查看且值得分享的合并转发消息交给插件，按目标群白名单顺序转发。",
+        brief_description=(
+            "根据 msg_id，将已经完整查看且你觉得有意思、符合人设、值得转发的合并转发消息分享到其他群聊。"
+        ),
         detailed_description=(
             "仅在你已经成功调用 view_forward_message 查看 msg_id 的全部内容，并自主判断值得分享时调用。"
             "目标群由插件白名单决定，禁止自行指定目标群。content_summary 用于完整内容缓存失效时降级。"

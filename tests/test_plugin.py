@@ -584,11 +584,12 @@ def test_extract_view_forward_results_pairs_tool_call_and_result() -> None:
 
 
 def test_forward_tool_component_is_deferred_and_group_scoped() -> None:
-    """验证自主转发 Tool 通过 deferred 池发现且只允许群聊调用。
+    """验证自主转发 Tool 的 deferred 声明、群聊范围和首次暴露描述。
 
     期望组件顶层 ``chat_scope`` 为 ``group``，同时将 ``visibility`` 明确
-    声明为 ``deferred``。该测试防止工具重新全量暴露给 Planner，或被私聊
-    调用。
+    声明为 ``deferred``；简要描述应提示 Planner 根据 ``msg_id`` 分享有意思、
+    符合人设且值得转发的内容，不暴露内部目标白名单。该测试防止工具重新
+    全量暴露给 Planner、被私聊调用，或首次暴露的用途说明发生语义回退。
     """
 
     plugin = ForwardMessagesAutoPlugin()
@@ -596,6 +597,11 @@ def test_forward_tool_component_is_deferred_and_group_scoped() -> None:
     component = next(item for item in plugin.get_components() if item["name"] == FORWARD_TOOL_NAME)
     assert component["chat_scope"] == "group"
     assert component["metadata"]["visibility"] == "deferred"
+    brief_description = component["metadata"]["brief_description"]
+    assert brief_description == (
+        "根据 msg_id，将已经完整查看且你觉得有意思、符合人设、值得转发的合并转发消息分享到其他群聊。"
+    )
+    assert "白名单" not in brief_description
 
 
 @pytest.mark.asyncio

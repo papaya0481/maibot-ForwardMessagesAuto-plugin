@@ -6,6 +6,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- 优化自主转发 deferred Tool 的首次暴露描述，明确按 `msg_id` 分享有意思、符合人设且值得转发的内容。
+
 ## [0.1.8] - 2026-07-24
 
 ### Changed
