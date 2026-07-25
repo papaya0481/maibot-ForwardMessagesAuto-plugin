@@ -7,7 +7,12 @@ from collections.abc import Callable
 from typing import Any
 
 from .config import ForwardMessagesAutoConfig
-from .models import ForwardJob, TargetStage
+from .models import (
+    ForwardDeliveryReport,
+    ForwardJob,
+    TargetDeliveryResult,
+    TargetStage,
+)
 from .state import ForwardStateStore
 from .streams import GroupStreamRegistry
 
@@ -90,14 +95,18 @@ class ForwardDeliveryService:
 
         return state_key in self._active_job_keys
 
-    def schedule(self, job: ForwardJob) -> None:
+    def schedule(self, job: ForwardJob) -> asyncio.Task[ForwardDeliveryReport]:
         """将一个已验证任务安排到当前事件循环后台执行。
 
-        方法立即登记活动键并创建具名 ``asyncio.Task``，不会等待任何 target
-        实际投递。任务结束时回调负责回收引用和记录未处理异常。
+        方法立即登记活动键并创建具名 ``asyncio.Task``。调用方可以等待返回
+        的任务取得全部 target 的真实处理报告；任务结束时回调负责回收引用
+        和记录未处理异常。
 
         Args:
             job: 已完成权限、消息类型和幂等校验的转发任务快照。
+
+        Returns:
+            正在执行顺序投递并最终返回 ``ForwardDeliveryReport`` 的任务。
 
         Raises:
             RuntimeError: 当调用时没有正在运行的 asyncio 事件循环。
@@ -110,6 +119,7 @@ class ForwardDeliveryService:
         )
         self.background_tasks.add(task)
         task.add_done_callback(self._on_task_done)
+        return task
 
     async def stop(self) -> None:
         """进入卸载状态，取消并等待全部后台任务。
@@ -160,26 +170,31 @@ class ForwardDeliveryService:
                 exc_info=exception,
             )
 
-    async def _run_job(self, job: ForwardJob) -> None:
+    async def _run_job(self, job: ForwardJob) -> ForwardDeliveryReport:
         """按照任务快照中的 target 顺序执行完整投递。
 
         开始时确保任务状态已持久化。单个 target 的普通异常会记录后继续
-        下一个 target；任务取消会向上传播；无论如何退出都会移除活动键。
+        下一个 target，并进入聚合报告；任务取消会向上传播；无论如何退出
+        都会移除活动键。
 
         Args:
             job: 包含 source、目标顺序、原始节点和展开内容的任务快照。
+
+        Returns:
+            保持 target 配置顺序的真实投递聚合报告。
 
         Raises:
             asyncio.CancelledError: 插件卸载取消任务时向上保留取消语义。
         """
 
+        target_results: list[TargetDeliveryResult] = []
         try:
             await self._state.ensure_job(job)
             for target_group_id in job.target_group_ids:
                 if self._is_unloading:
-                    return
+                    break
                 try:
-                    await self._process_target(job, target_group_id)
+                    target_results.append(await self._process_target(job, target_group_id))
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
@@ -190,10 +205,28 @@ class ForwardDeliveryService:
                         exc,
                         exc_info=True,
                     )
+                    target_results.append(
+                        TargetDeliveryResult(
+                            target_group_id=target_group_id,
+                            stage=self._state.get_target_stage(job.state_key, target_group_id),
+                            success=False,
+                            failure_stage="处理目标群",
+                            error=str(exc),
+                        )
+                    )
+            return ForwardDeliveryReport(
+                job_id=job.job_id,
+                target_count=len(job.target_group_ids),
+                target_results=tuple(target_results),
+            )
         finally:
             self._active_job_keys.discard(job.state_key)
 
-    async def _process_target(self, job: ForwardJob, target_group_id: str) -> None:
+    async def _process_target(
+        self,
+        job: ForwardJob,
+        target_group_id: str,
+    ) -> TargetDeliveryResult:
         """从已持久化阶段继续处理单个目标群。
 
         方法依次解析聊天流、发送合并转发、写入 Maisaka 上下文，并按配置
@@ -203,6 +236,9 @@ class ForwardDeliveryService:
         Args:
             job: 当前转发任务快照。
             target_group_id: 当前处理的 target QQ 群号。
+
+        Returns:
+            包含最终阶段和失败位置的目标群真实处理结果。
         """
 
         target_stream_id = await self._streams.resolve(target_group_id)
@@ -212,30 +248,68 @@ class ForwardDeliveryService:
                 job.job_id,
                 target_group_id,
             )
-            return
+            return TargetDeliveryResult(
+                target_group_id=target_group_id,
+                stage=TargetStage.PENDING,
+                success=False,
+                failure_stage="解析目标群",
+                error="无法解析 target 群聊流",
+            )
 
         stage = self._state.get_target_stage(job.state_key, target_group_id)
         if stage < TargetStage.SENT:
-            if not await self._send_forward(job, target_group_id, target_stream_id):
-                return
+            error = await self._send_forward(job, target_group_id, target_stream_id)
+            if error is not None:
+                return TargetDeliveryResult(
+                    target_group_id=target_group_id,
+                    stage=stage,
+                    success=False,
+                    failure_stage="发送",
+                    error=error,
+                )
             stage = TargetStage.SENT
 
         if stage < TargetStage.CONTEXT_APPENDED:
-            if not await self._append_context(job, target_group_id, target_stream_id):
-                return
+            error = await self._append_context(job, target_group_id, target_stream_id)
+            if error is not None:
+                return TargetDeliveryResult(
+                    target_group_id=target_group_id,
+                    stage=stage,
+                    success=False,
+                    failure_stage="写入目标群上下文",
+                    error=error,
+                )
             stage = TargetStage.CONTEXT_APPENDED
 
         if not self._config_provider().behavior.trigger_target_planner:
-            return
+            return TargetDeliveryResult(
+                target_group_id=target_group_id,
+                stage=stage,
+                success=True,
+            )
         if stage < TargetStage.PLANNER_QUEUED:
-            await self._trigger_planner(job, target_group_id, target_stream_id)
+            error = await self._trigger_planner(job, target_group_id, target_stream_id)
+            if error is not None:
+                return TargetDeliveryResult(
+                    target_group_id=target_group_id,
+                    stage=stage,
+                    success=False,
+                    failure_stage="触发目标群 Planner",
+                    error=error,
+                )
+            stage = TargetStage.PLANNER_QUEUED
+        return TargetDeliveryResult(
+            target_group_id=target_group_id,
+            stage=stage,
+            success=True,
+        )
 
     async def _send_forward(
         self,
         job: ForwardJob,
         target_group_id: str,
         target_stream_id: str,
-    ) -> bool:
+    ) -> str | None:
         """将原始合并转发节点发送到目标聊天流。
 
         发送时开启 Maisaka 历史同步，使 Host 在目标群 runtime 已存在时把
@@ -249,8 +323,8 @@ class ForwardDeliveryService:
             target_stream_id: 已解析的目标 MaiBot 聊天流 ID。
 
         Returns:
-            发送并记录阶段成功时返回 ``True``；capability 返回失败时记录
-            警告并返回 ``False``。
+            发送并记录阶段成功时返回 ``None``；capability 返回失败时记录
+            警告并返回当前兼容解析器生成的错误文本。
         """
 
         result = await self._ctx.send.forward(
@@ -262,22 +336,23 @@ class ForwardDeliveryService:
             maisaka_source_kind=f"cross_group_forward:{job.job_id}",
         )
         if not CapabilityResult.succeeded(result):
+            error = CapabilityResult.error(result)
             self._ctx.logger.warning(
                 "合并转发发送失败: job=%s target=%s error=%s",
                 job.job_id,
                 target_group_id,
-                CapabilityResult.error(result),
+                error,
             )
-            return False
+            return error
         await self._state.advance_target(job, target_group_id, TargetStage.SENT)
-        return True
+        return None
 
     async def _append_context(
         self,
         job: ForwardJob,
         target_group_id: str,
         target_stream_id: str,
-    ) -> bool:
+    ) -> str | None:
         """把转发消息段及源群展开文本写入目标 Maisaka 上下文。
 
         显式上下文包含原始 ``forward`` 段和可读 ``visible_text``，使目标群
@@ -290,8 +365,8 @@ class ForwardDeliveryService:
             target_stream_id: 接收上下文的目标聊天流 ID。
 
         Returns:
-            上下文追加并记录阶段成功时返回 ``True``；capability 失败时记录
-            警告并返回 ``False``。
+            上下文追加并记录阶段成功时返回 ``None``；capability 失败时
+            记录警告并返回当前兼容解析器生成的错误文本。
         """
 
         visible_text = f"[你从其他群聊分享了一则合并转发消息；以下内容已在源群完整展开]\n{job.expanded_content}"
@@ -303,38 +378,43 @@ class ForwardDeliveryService:
             message_id=f"cross-forward:{job.job_id}:{target_group_id}",
         )
         if not CapabilityResult.succeeded(result):
+            error = CapabilityResult.error(result)
             self._ctx.logger.warning(
                 "目标群上下文写入失败: job=%s target=%s error=%s",
                 job.job_id,
                 target_group_id,
-                CapabilityResult.error(result),
+                error,
             )
-            return False
+            return error
         await self._state.advance_target(
             job,
             target_group_id,
             TargetStage.CONTEXT_APPENDED,
         )
-        return True
+        return None
 
     async def _trigger_planner(
         self,
         job: ForwardJob,
         target_group_id: str,
         target_stream_id: str,
-    ) -> None:
+    ) -> str | None:
         """强制触发目标群 Planner 自主决定评论或沉默。
 
         意图明确告知 Planner 完整内容已经进入上下文，并要求结合本群语境
         自主判断，而非机械复述。若决定评论，只允许选择目标群上下文中刚刚
         真实发送的合并转发消息作为 ``reply`` 目标；主动任务不暴露源群消息
         ID，避免跨聊天流误用。capability 失败只记录警告；成功后推进到
-        ``PLANNER_QUEUED``。
+        ``PLANNER_QUEUED``，并将失败原因交给任务聚合报告。
 
         Args:
             job: 提供分享理由和任务 ID 的任务快照。
             target_group_id: 用于日志和阶段状态的目标 QQ 群号。
             target_stream_id: 要触发主动任务的目标聊天流 ID。
+
+        Returns:
+            Planner 入队并记录阶段成功时返回 ``None``；capability 失败时
+            返回当前兼容解析器生成的错误文本。
         """
 
         intent = (
@@ -353,13 +433,14 @@ class ForwardDeliveryService:
             metadata={"job_id": job.job_id},
         )
         if not CapabilityResult.succeeded(result):
+            error = CapabilityResult.error(result)
             self._ctx.logger.warning(
                 "目标群 Planner 触发失败: job=%s target=%s error=%s",
                 job.job_id,
                 target_group_id,
-                CapabilityResult.error(result),
+                error,
             )
-            return
+            return error
         await self._state.advance_target(
             job,
             target_group_id,
@@ -370,3 +451,4 @@ class ForwardDeliveryService:
             job.job_id,
             target_group_id,
         )
+        return None

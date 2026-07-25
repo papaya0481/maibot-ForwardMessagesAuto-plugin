@@ -189,7 +189,7 @@ class ForwardingRuntime:
         content_summary: str,
         invocation_context: dict[str, Any],
     ) -> dict[str, Any]:
-        """将 Tool 调用委托给请求服务完成校验和任务创建。
+        """将 Tool 调用委托给请求服务完成校验和真实投递。
 
         Args:
             msg_id: source Planner 已完整查看的合并转发消息 ID。
@@ -200,10 +200,10 @@ class ForwardingRuntime:
                 ``platform``、``group_id``、``stream_id`` 或 ``chat_id``。
 
         Returns:
-            可供 Planner 阅读的结果字典。成功接受时包含 ``success=True``、
-            ``accepted=True``、``job_id`` 和 ``target_count``；重复任务会返回
-            ``accepted=False``；校验失败返回 ``success=False`` 和中文
-            ``content``。
+            可供 Planner 阅读的结果字典。完整投递成功时包含
+            ``success=True``、``completed=True``、``status="succeeded"``、
+            ``job_id`` 和目标统计；重复任务会返回 ``accepted=False``；
+            校验或投递失败返回 ``success=False`` 和中文 ``content``。
         """
 
         return await self.requests.create(

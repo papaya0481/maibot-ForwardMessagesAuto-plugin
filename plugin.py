@@ -266,6 +266,7 @@ class ForwardMessagesAutoPlugin(MaiBotPlugin):
             "仅在你已经成功调用 view_forward_message 查看 msg_id 的全部内容，并自主判断值得分享时调用。"
             "该成功查看结果必须仍在当前上下文中；目标群由插件白名单决定，禁止自行指定目标群。"
             "content_summary 只在连续可重试故障达到配置阈值或连续两次返回空内容时降级使用。"
+            "工具会等待全部目标群的真实处理结果；只有 success=true 且 status=succeeded 才表示完整成功。"
         ),
         parameters=[
             ToolParameterInfo(
@@ -291,6 +292,7 @@ class ForwardMessagesAutoPlugin(MaiBotPlugin):
         ],
         visibility="deferred",
         chat_scope="group",
+        timeout_ms=120000,
     )
     async def request_cross_group_forward(
         self,
@@ -302,8 +304,8 @@ class ForwardMessagesAutoPlugin(MaiBotPlugin):
         """请求把一则已完整查看的 source 合并转发分享至白名单群。
 
         该 Tool 不接收 target 参数；目标集合和顺序只能来自插件配置。方法
-        将 SDK 调用上下文和 Planner 参数交给运行时，验证成功后快速返回，
-        实际发送在后台进行。
+        将 SDK 调用上下文和 Planner 参数交给运行时，并等待全部 target 的
+        真实顺序处理报告；只有全部完成时才向 Planner 返回成功。
 
         Args:
             msg_id: 刚通过 ``view_forward_message`` 查看过的源消息 ID。
@@ -314,9 +316,10 @@ class ForwardMessagesAutoPlugin(MaiBotPlugin):
                 ``group_id`` 和 ``stream_id`` 或 ``chat_id``。
 
         Returns:
-            Planner 可读的任务结果。新任务包含 ``accepted=True``、任务 ID
-            和目标数量；重复任务包含 ``accepted=False``；拒绝时包含
-            ``success=False`` 和中文原因。
+            Planner 可读的真实任务结果。新任务包含 ``accepted=True``、
+            ``completed=True``、聚合状态、任务 ID 和目标数量；重复任务包含
+            ``accepted=False``；拒绝或投递失败时包含 ``success=False`` 和
+            中文原因。
 
         Raises:
             RuntimeError: Tool 在 ``on_load`` 初始化运行时前被调用。

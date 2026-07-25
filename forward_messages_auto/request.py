@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
 from typing import Any
 
 from .config import ForwardMessagesAutoConfig, GroupIdList
 from .delivery import ForwardDeliveryService
 from .models import (
+    ForwardDeliveryReport,
     ForwardJob,
     TargetStage,
     ViewEligibilityStatus,
@@ -64,11 +66,12 @@ class ForwardRequestService:
         content_summary: str,
         invocation_context: dict[str, Any],
     ) -> dict[str, Any]:
-        """校验转发请求、读取源消息并安排后台任务。
+        """校验转发请求、读取源消息并等待真实投递结果。
 
         处理顺序包括调用环境校验、source 消息归属校验、合并转发节点解析、
-        展开内容选择和幂等判断。所有校验通过后仅安排后台任务，不等待各
-        target 实际发送完成。
+        展开内容选择和幂等判断。所有校验通过后创建受生命周期管理的投递
+        任务，并等待全部 target 按顺序完成或失败，再向 Planner 返回聚合
+        结果；调用方取消等待时不会连带取消已经开始的投递。
 
         Args:
             msg_id: source Planner 刚通过 ``view_forward_message`` 查看过的
@@ -80,10 +83,14 @@ class ForwardRequestService:
                 ``platform``、``group_id``，以及 ``stream_id`` 或 ``chat_id``。
 
         Returns:
-            Planner 可读的结果字典。接受新任务时包含 ``success=True``、
-            ``accepted=True``、稳定 ``job_id`` 和 ``target_count``；任务正在
-            处理或已经完成时返回 ``accepted=False``；校验或读取失败时返回
+            Planner 可读的结果字典。新任务真实完成后包含 ``completed=True``、
+            聚合状态、稳定 ``job_id`` 及成功数量；任务仍在处理时返回
+            ``completed=False``；校验、读取或投递失败时返回
             ``success=False`` 及中文 ``content``。
+
+        Raises:
+            asyncio.CancelledError: Tool RPC 被取消时向上传播，但通过屏蔽取消
+                保留已经开始的投递任务。
         """
 
         validation = self._validate_invocation(msg_id, invocation_context)
@@ -138,15 +145,57 @@ class ForwardRequestService:
             expanded_content=expanded_content,
             sharing_reason=str(sharing_reason or "").strip(),
         )
-        self._delivery.schedule(job)
-        return {
-            "success": True,
-            "content": (
-                f"已接受跨群转发请求，将按白名单顺序处理 {len(target_group_ids)} 个目标群。任务 ID：{job_id}。"
-            ),
-            "job_id": job_id,
+        delivery_task = self._delivery.schedule(job)
+        report = await asyncio.shield(delivery_task)
+        return self._build_delivery_result(report)
+
+    @staticmethod
+    def _build_delivery_result(report: ForwardDeliveryReport) -> dict[str, Any]:
+        """把真实投递报告转换成 Planner 可读的 Tool 结果。
+
+        Args:
+            report: 已覆盖全部配置 target 的顺序投递报告。
+
+        Returns:
+            完整成功时返回 ``success=True`` 和 ``status="succeeded"``；
+            任一目标失败时返回 ``success=False``，并列出物理发送数、完整
+            处理数及各失败目标的阶段和当前错误文本。
+        """
+
+        common_result = {
+            "job_id": report.job_id,
             "accepted": True,
-            "target_count": len(target_group_ids),
+            "completed": True,
+            "target_count": report.target_count,
+            "sent_target_count": report.sent_target_count,
+            "completed_target_count": report.completed_target_count,
+            "failed_target_count": len(report.failed_results),
+        }
+        if report.success:
+            return {
+                **common_result,
+                "success": True,
+                "status": "succeeded",
+                "content": (
+                    f"跨群转发已完成：{report.sent_target_count}/{report.target_count} 个目标群发送成功，"
+                    f"{report.completed_target_count}/{report.target_count} 个目标群完成全部后续处理。"
+                    f"任务 ID：{report.job_id}。"
+                ),
+            }
+
+        failure_details = "；".join(
+            f"{result.target_group_id}（{result.failure_stage}：{result.error}）" for result in report.failed_results
+        )
+        status = "partial_failed" if report.sent_target_count else "failed"
+        return {
+            **common_result,
+            "success": False,
+            "status": status,
+            "content": (
+                f"跨群转发未全部成功：{report.sent_target_count}/{report.target_count} 个目标群发送成功，"
+                f"{report.completed_target_count}/{report.target_count} 个目标群完成全部后续处理。"
+                f"失败详情：{failure_details}。任务 ID：{report.job_id}。"
+            ),
         }
 
     def _validate_invocation(
@@ -430,10 +479,12 @@ class ForwardRequestService:
 
         if self._delivery.is_active(state_key):
             return {
-                "success": True,
-                "content": f"该合并转发已经在处理中，任务 ID：{job_id}。",
+                "success": False,
+                "content": f"该合并转发仍在处理中，尚不能确认转发成功。任务 ID：{job_id}。",
                 "job_id": job_id,
                 "accepted": False,
+                "completed": False,
+                "status": "processing",
             }
         required_stage = (
             TargetStage.PLANNER_QUEUED if self.config.behavior.trigger_target_planner else TargetStage.CONTEXT_APPENDED
@@ -444,6 +495,8 @@ class ForwardRequestService:
                 "content": f"该合并转发已经完成当前白名单投递，任务 ID：{job_id}。",
                 "job_id": job_id,
                 "accepted": False,
+                "completed": True,
+                "status": "succeeded",
             }
         return None
 

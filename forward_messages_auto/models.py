@@ -106,3 +106,63 @@ class ForwardJob:
     forward_messages: list[dict[str, Any]]
     expanded_content: str
     sharing_reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class TargetDeliveryResult:
+    """单个目标群完成顺序处理后的真实结果。"""
+
+    target_group_id: str
+    stage: TargetStage
+    success: bool
+    failure_stage: str = ""
+    error: str = ""
+
+
+@dataclass(frozen=True, slots=True)
+class ForwardDeliveryReport:
+    """一次跨群转发任务覆盖全部目标群的聚合结果。"""
+
+    job_id: str
+    target_count: int
+    target_results: tuple[TargetDeliveryResult, ...]
+
+    @property
+    def success(self) -> bool:
+        """判断全部目标群是否都完成了当前要求的处理阶段。
+
+        Returns:
+            结果数量与目标数量一致且每个结果均成功时返回 ``True``。
+        """
+
+        return len(self.target_results) == self.target_count and all(result.success for result in self.target_results)
+
+    @property
+    def completed_target_count(self) -> int:
+        """统计完成当前完整处理要求的目标群数量。
+
+        Returns:
+            ``success=True`` 的目标结果数量。
+        """
+
+        return sum(result.success for result in self.target_results)
+
+    @property
+    def sent_target_count(self) -> int:
+        """统计已经确认完成物理发送的目标群数量。
+
+        Returns:
+            阶段不低于 ``TargetStage.SENT`` 的目标结果数量。
+        """
+
+        return sum(result.stage >= TargetStage.SENT for result in self.target_results)
+
+    @property
+    def failed_results(self) -> tuple[TargetDeliveryResult, ...]:
+        """返回未完成当前完整处理要求的目标结果。
+
+        Returns:
+            保持配置顺序的失败目标结果元组。
+        """
+
+        return tuple(result for result in self.target_results if not result.success)

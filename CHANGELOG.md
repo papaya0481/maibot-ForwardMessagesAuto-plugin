@@ -6,6 +6,16 @@
 
 ## [Unreleased]
 
+### Changed
+
+- 跨群转发 Tool 改为等待全部 target 的真实顺序处理结果，并返回实际发送、
+  完整处理和失败目标统计；单个 target 失败仍不阻止后续 target。
+
+### Fixed
+
+- 修复任务仅进入 `asyncio` 事件循环就向源群 Planner 报告成功、后台发送
+  失败却无法反映在本次 ToolResult 中的问题。
+
 ## [0.1.14] - 2026-07-24
 
 ### Added

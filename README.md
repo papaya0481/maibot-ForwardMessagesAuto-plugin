@@ -42,7 +42,8 @@ source 和 target 均只填写 QQ 群号字符串。`target_groups` 的列表顺
 
 1. source 群 Planner 调用内置 `view_forward_message` 查看当前聊天流中的一则合并转发；其内部节点可以最初来自其他群。
 2. Planner 认为内容值得分享时，通过 `tool_search` 发现并调用 deferred Tool `request_cross_group_forward`。
-3. 插件按 `msg_id + source stream` 读取原始合并转发节点，并按 target 白名单顺序创建后台投递。
+3. 插件按 `msg_id + source stream` 读取原始合并转发节点，按 target 白名单
+   顺序执行投递，并等待全部目标产生真实结果后再向源群 Planner 返回。
 4. 每个 target 发送时请求 Host 将带目标群消息 ID 的真实发送消息同步到
    Maisaka 历史；发送成功后，插件再显式写入已经展开的完整内容。
 5. 启用 `trigger_target_planner` 时，插件强制触发目标群 Planner；Planner
@@ -80,6 +81,9 @@ sent → context_appended → planner_queued
 自动合并到新结构。
 
 单个 target 失败不会阻止后续 target。当前版本只保证发送和主动任务入队按白名单顺序发生；不同目标群的 Planner 可能在入队后并发推理。
+转发 Tool 只有在全部 target 完成当前要求的处理阶段后才返回成功；部分失败
+或全部失败会返回实际发送数、完整处理数和失败阶段，不再把任务入队视为
+转发成功。
 
 当前 Host 仅在目标群 Maisaka runtime 已经存在时同步真实发送消息；冷启动
 目标群仍可能缺少可供 `reply` 定位的真实消息。插件不会为规避该限制而在

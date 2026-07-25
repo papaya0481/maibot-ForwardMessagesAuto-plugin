@@ -292,6 +292,42 @@ class FakeSendCapability:
         return {"success": True}
 
 
+class BlockingSendCapability(FakeSendCapability):
+    """在测试释放闸门前阻塞首次物理发送。"""
+
+    def __init__(self, events: list[tuple[str, str]]) -> None:
+        """创建带开始通知和释放闸门的发送替身。
+
+        Args:
+            events: 所有 Fake capability 共享的事件列表。
+        """
+
+        super().__init__(events)
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def forward(
+        self,
+        messages: list[dict[str, Any]],
+        stream_id: str,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        """等待测试放行后执行父类发送逻辑。
+
+        Args:
+            messages: 传给 ``ctx.send.forward`` 的规范化转发节点。
+            stream_id: 接收消息的目标聊天流 ID。
+            **kwargs: 透传给父类替身的发送选项。
+
+        Returns:
+            闸门释放后父类生成的成功结果字典。
+        """
+
+        self.started.set()
+        await self.release.wait()
+        return await super().forward(messages, stream_id, **kwargs)
+
+
 class FakeMaisakaContextCapability:
     def __init__(
         self,
@@ -911,12 +947,13 @@ def test_view_freshness_is_not_evicted_by_other_stream_activity() -> None:
 
 
 def test_forward_tool_component_is_deferred_and_group_scoped() -> None:
-    """验证自主转发 Tool 的 deferred 声明、群聊范围和首次暴露描述。
+    """验证自主转发 Tool 的发现方式、群聊范围、超时和首次暴露描述。
 
     期望组件顶层 ``chat_scope`` 为 ``group``，同时将 ``visibility`` 明确
-    声明为 ``deferred``；简要描述应提示 Planner 根据 ``msg_id`` 分享有意思、
-    符合人设且值得转发的内容，不暴露内部目标白名单。该测试防止工具重新
-    全量暴露给 Planner、被私聊调用，或首次暴露的用途说明发生语义回退。
+    声明为 ``deferred``，并为真实顺序投递保留两分钟 RPC 时间；简要描述
+    应提示 Planner 根据 ``msg_id`` 分享有意思、符合人设且值得转发的内容，
+    不暴露内部目标白名单。该测试防止工具重新全量暴露给 Planner、被私聊
+    调用、退回默认短超时，或首次暴露的用途说明发生语义回退。
     """
 
     plugin = ForwardMessagesAutoPlugin()
@@ -924,6 +961,7 @@ def test_forward_tool_component_is_deferred_and_group_scoped() -> None:
     component = next(item for item in plugin.get_components() if item["name"] == FORWARD_TOOL_NAME)
     assert component["chat_scope"] == "group"
     assert component["metadata"]["visibility"] == "deferred"
+    assert component["metadata"]["timeout_ms"] == 120000
     brief_description = component["metadata"]["brief_description"]
     assert brief_description == (
         "根据 msg_id，将已经完整查看且你觉得有意思、符合人设、值得转发的合并转发消息分享到其他群聊。"
@@ -1305,6 +1343,47 @@ async def test_tool_rejects_after_successful_view_leaves_current_context(tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_tool_waits_for_real_delivery_before_reporting_success(tmp_path: Path) -> None:
+    """验证 Tool 在真实发送放行前不会提前返回成功。
+
+    发送替身进入首个 target 后保持阻塞，期望 Tool 调用仍未完成；释放闸门
+    后全部 target 完成，Tool 才返回 ``completed=True`` 和真实成功统计。
+    该测试防止后台任务刚入队就被错误报告为转发成功。
+
+    Args:
+        tmp_path: pytest 提供的隔离状态目录，用于运行真实请求和阶段持久化。
+    """
+
+    plugin = build_plugin(tmp_path)
+    blocking_send = BlockingSendCapability(plugin.ctx.events)
+    plugin.ctx.send = blocking_send
+    await plugin.on_load()
+    seed_successful_view(plugin)
+
+    request_task = asyncio.create_task(
+        plugin.request_cross_group_forward(
+            "forward-message",
+            sharing_reason="很有意思",
+            platform="qq",
+            group_id="10001",
+            stream_id="source-stream",
+        )
+    )
+    await blocking_send.started.wait()
+    assert request_task.done() is False
+
+    blocking_send.release.set()
+    result = await request_task
+
+    assert result["success"] is True
+    assert result["completed"] is True
+    assert result["status"] == "succeeded"
+    assert result["sent_target_count"] == 2
+    assert result["completed_target_count"] == 2
+    await plugin.on_unload()
+
+
+@pytest.mark.asyncio
 async def test_tool_sends_targets_in_order_and_deduplicates(tmp_path: Path) -> None:
     """验证多目标严格按阶段顺序处理，并对完成任务执行去重。
 
@@ -1329,6 +1408,8 @@ async def test_tool_sends_targets_in_order_and_deduplicates(tmp_path: Path) -> N
     )
     assert result["success"] is True
     assert result["accepted"] is True
+    assert result["completed"] is True
+    assert result["status"] == "succeeded"
     await wait_for_background_tasks(plugin)
 
     assert plugin.ctx.events == [
@@ -1648,6 +1729,12 @@ async def test_send_failure_skips_context_but_continues_next_target(tmp_path: Pa
         stream_id="source-stream",
     )
     assert result["accepted"] is True
+    assert result["success"] is False
+    assert result["completed"] is True
+    assert result["status"] == "partial_failed"
+    assert result["sent_target_count"] == 1
+    assert result["completed_target_count"] == 1
+    assert "20001（发送：模拟发送失败）" in result["content"]
     await wait_for_background_tasks(plugin)
 
     assert plugin.ctx.events == [
