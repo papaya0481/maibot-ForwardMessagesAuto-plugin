@@ -6,6 +6,11 @@
 
 ## [Unreleased]
 
+### Added
+
+- 新增发送失败结构化原因透传 TODO，记录 Host、SDK 与插件各层的错误保真
+  目标及向后兼容方案。
+
 ### Changed
 
 - 跨群转发 Tool 改为等待全部 target 的真实顺序处理结果，并返回实际发送、

@@ -19,6 +19,7 @@
 | `TODO-001` | 由 Host 向 Planner Hook 暴露结构化 ToolResult 状态 | 等待上游 | MaiBot Host | 中 |
 | `TODO-002` | 将未消费的成功查看结果保留至当前决策结束 | 等待上游 | MaiBot Host | 低 |
 | `TODO-003` | 让发送能力返回目标消息并可靠同步至 Maisaka 历史 | 等待上游 | MaiBot Host / SDK | 高 |
+| `TODO-004` | 保留发送失败在 Host、SDK 与插件之间的结构化原因 | 等待上游 | MaiBot Host / SDK | 高 |
 
 ## 待办事项
 
@@ -190,6 +191,59 @@ ID。
   不会跨聊天流混用；
 - 发送失败时不创建虚假目标上下文，重试也不会重复物理发送；
 - 单驱动、多驱动、冷启动 runtime 和插件重载恢复路径均有 Host 级测试。
+
+### TODO-004：保留发送失败在 Host、SDK 与插件之间的结构化原因
+
+- 状态：等待上游
+- 依赖：MaiBot Host / maibot-plugin-sdk
+- 优先级：高
+- 目标版本：待定
+
+#### 背景
+
+生产环境中，SnowLuma 网关可能在等待发送 ack 时超时。当前错误经过以下
+链路后会丢失具体原因：
+
+1. `send_service` 在 Platform IO 投递失败后返回 `None`；
+2. Host `send.forward` capability 将结果包装为 `{"success": None}`，没有
+   携带底层回执中的超时错误；
+3. SDK 把 `send.forward` 列为布尔成功能力，将 Host 字典归一化为
+   `False`；
+4. 插件只能把非字典的 `False` 解释为“返回格式错误”。
+
+因此 Planner 即使已经等待真实投递完成，也只能知道发送失败，无法判断是
+网关 ack 超时、路由缺失、驱动不可用还是其他原因。本插件当前保持既有
+`CapabilityResult` 兼容行为，不在缺少证据时根据耗时猜测具体根因。
+
+#### 目标
+
+让发送失败的稳定错误码和可读原因从 Platform IO 回执完整传递到第三方
+插件，并由插件原样纳入目标结果和 ToolResult；成功路径继续兼容现有
+`send.* -> bool` 调用方式。
+
+#### 上游实施方向
+
+1. `send_service` 失败时返回结构化结果，至少包含 `success`、`code`、
+   `error`、`driver_id` 和必要的回执元数据，不再用无原因的 `None` 表示
+   所有失败。
+2. Host capability 保留底层失败信息；异常和正常业务失败使用稳定且可区分
+   的错误码，例如 `gateway_ack_timeout`、`route_not_found` 和
+   `driver_unavailable`。
+3. SDK 不应把带 `error` 的失败字典压缩成 `False`。可为发送能力新增详细
+   结果模式，或只对成功响应返回布尔值并保留失败字典。
+4. 上游接口可用后，插件统一解析当前 SDK 布尔值、旧版 Host 字典和新版
+   结构化发送结果；明确错误原样保留，缺失时使用“Host 未提供失败原因”，
+   不再把合法的布尔失败描述成返回格式错误。
+5. 插件最终只向 Planner 暴露必要的错误类别和简短中文原因，不输出完整
+   媒体数据、敏感路由元数据或底层堆栈。
+
+#### 验收条件
+
+- SnowLuma 发送 ack 超时时，插件能取得稳定错误码和明确超时原因；
+- Host 日志、SDK 返回值、插件日志和 ToolResult 使用同一错误类别；
+- 路由缺失、驱动不可用、网关拒绝和 ack 超时可以可靠区分；
+- 旧版布尔成功响应和旧版失败字典仍有兼容测试；
+- 失败信息不会泄露消息正文、媒体 Base64、凭据或敏感路由数据。
 
 ## 新增 TODO 模板
 
