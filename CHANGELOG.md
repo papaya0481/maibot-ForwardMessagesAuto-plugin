@@ -6,6 +6,8 @@
 
 ## [Unreleased]
 
+## [0.1.16] - 2026-07-26
+
 ### Changed
 
 - 目标投递流程改为 `send → proactive.trigger`，不再向目标 Maisaka 上下文
@@ -193,7 +195,8 @@
 - 新增分阶段持久化状态与幂等恢复，避免后续步骤失败时重复发送。
 - 新增测试，覆盖缓存、白名单、消息节点、顺序投递、失败隔离和去重。
 
-[Unreleased]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.15...HEAD
+[Unreleased]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.16...HEAD
+[0.1.16]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.15...v0.1.16
 [0.1.15]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.14...v0.1.15
 [0.1.14]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.13...v0.1.14
 [0.1.13]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.12...v0.1.13
