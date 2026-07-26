@@ -55,7 +55,7 @@ class CapabilityResult:
 
 
 class ForwardDeliveryService:
-    """按目标群顺序推进发送、上下文和 Planner 阶段。"""
+    """按目标群顺序推进发送和 Planner 阶段。"""
 
     def __init__(
         self,
@@ -67,8 +67,8 @@ class ForwardDeliveryService:
         """创建共享后台任务和阶段状态的顺序投递服务。
 
         Args:
-            context: MaiBot ``PluginContext``，用于发送消息、写入 Maisaka
-                上下文、触发 Planner 和记录日志。
+            context: MaiBot ``PluginContext``，用于发送消息、触发 Planner
+                和记录日志。
             config_provider: 返回最新插件配置的回调，用于读取是否触发目标群
                 Planner。
             streams: 负责将 target QQ 群号解析为聊天流的注册表。
@@ -229,9 +229,9 @@ class ForwardDeliveryService:
     ) -> TargetDeliveryResult:
         """从已持久化阶段继续处理单个目标群。
 
-        方法依次解析聊天流、发送合并转发、写入 Maisaka 上下文，并按配置
-        触发目标群 Planner。任一步骤返回失败时停止当前 target，不推进后续
-        阶段；外层任务仍会继续下一个 target。
+        方法依次解析聊天流、发送合并转发，并按配置触发目标群 Planner。
+        任一步骤返回失败时停止当前 target，不推进后续阶段；外层任务仍会
+        继续下一个 target。
 
         Args:
             job: 当前转发任务快照。
@@ -269,18 +269,6 @@ class ForwardDeliveryService:
                 )
             stage = TargetStage.SENT
 
-        if stage < TargetStage.CONTEXT_APPENDED:
-            error = await self._append_context(job, target_group_id, target_stream_id)
-            if error is not None:
-                return TargetDeliveryResult(
-                    target_group_id=target_group_id,
-                    stage=stage,
-                    success=False,
-                    failure_stage="写入目标群上下文",
-                    error=error,
-                )
-            stage = TargetStage.CONTEXT_APPENDED
-
         if not self._config_provider().behavior.trigger_target_planner:
             return TargetDeliveryResult(
                 target_group_id=target_group_id,
@@ -314,8 +302,8 @@ class ForwardDeliveryService:
 
         发送时开启 Maisaka 历史同步，使 Host 在目标群 runtime 已存在时把
         带目标平台消息 ID 的真实发送消息写入历史，供 Planner 的 ``reply``
-        工具定位。下一阶段仍显式写入源群已经展开的内容；只有 capability
-        成功后才持久化 ``SENT`` 阶段。
+        工具定位。插件不再重复注入源群展开内容；只有 capability 成功后才
+        持久化 ``SENT`` 阶段。
 
         Args:
             job: 提供发送节点、任务 ID 和来源元数据的任务快照。
@@ -347,52 +335,6 @@ class ForwardDeliveryService:
         await self._state.advance_target(job, target_group_id, TargetStage.SENT)
         return None
 
-    async def _append_context(
-        self,
-        job: ForwardJob,
-        target_group_id: str,
-        target_stream_id: str,
-    ) -> str | None:
-        """把转发消息段及源群展开文本写入目标 Maisaka 上下文。
-
-        显式上下文包含原始 ``forward`` 段和可读 ``visible_text``，使目标群
-        Planner 无需再次调用查看工具。成功后持久化
-        ``CONTEXT_APPENDED`` 阶段。
-
-        Args:
-            job: 提供原始消息段、展开内容和任务 ID 的任务快照。
-            target_group_id: 用于构造稳定上下文消息 ID 的目标 QQ 群号。
-            target_stream_id: 接收上下文的目标聊天流 ID。
-
-        Returns:
-            上下文追加并记录阶段成功时返回 ``None``；capability 失败时
-            记录警告并返回当前兼容解析器生成的错误文本。
-        """
-
-        visible_text = f"[你从其他群聊分享了一则合并转发消息；以下内容已在源群完整展开]\n{job.expanded_content}"
-        result = await self._ctx.maisaka.context.append(
-            target_stream_id,
-            segments=[job.forward_segment],
-            visible_text=visible_text,
-            source_kind=f"cross_group_forward:{job.job_id}",
-            message_id=f"cross-forward:{job.job_id}:{target_group_id}",
-        )
-        if not CapabilityResult.succeeded(result):
-            error = CapabilityResult.error(result)
-            self._ctx.logger.warning(
-                "目标群上下文写入失败: job=%s target=%s error=%s",
-                job.job_id,
-                target_group_id,
-                error,
-            )
-            return error
-        await self._state.advance_target(
-            job,
-            target_group_id,
-            TargetStage.CONTEXT_APPENDED,
-        )
-        return None
-
     async def _trigger_planner(
         self,
         job: ForwardJob,
@@ -401,10 +343,10 @@ class ForwardDeliveryService:
     ) -> str | None:
         """强制触发目标群 Planner 自主决定评论或沉默。
 
-        意图明确告知 Planner 完整内容已经进入上下文，并要求结合本群语境
-        自主判断，而非机械复述。若决定评论，只允许选择目标群上下文中刚刚
-        真实发送的合并转发消息作为 ``reply`` 目标；主动任务不暴露源群消息
-        ID，避免跨聊天流误用。capability 失败只记录警告；成功后推进到
+        意图要求 Planner 结合本群语境自主判断，而非机械复述。若决定评论，
+        只允许选择目标群上下文中刚刚真实发送的合并转发消息作为 ``reply``
+        目标；无法可靠定位该消息时应保持沉默。主动任务不暴露源群消息 ID，
+        避免跨聊天流误用。capability 失败只记录警告；成功后推进到
         ``PLANNER_QUEUED``，并将失败原因交给任务聚合报告。
 
         Args:
@@ -419,10 +361,9 @@ class ForwardDeliveryService:
 
         intent = (
             "你刚刚把一则来自其他群聊的合并转发分享到了本群。"
-            "消息完整内容已经写入当前上下文，无需再次调用 view_forward_message。"
             "请结合本群近期聊天、群友关系、记忆和你的表达习惯，自主决定是否发表一句自然的整体看法；"
-            "如果决定发表看法，调用 reply 时必须选择当前上下文中由你刚刚实际发送的那则合并转发消息，"
-            "使用它在本群中的 msg_id；不要使用源群消息 ID，也不要选择插件追加的 cross-forward 上下文消息。"
+            "如果当前上下文中能可靠定位由你刚刚实际发送的那则合并转发消息，并且你决定发表看法，"
+            "调用 reply 时只能选择该真实消息；不要使用源群消息 ID。无法可靠定位时请保持沉默。"
             "如果没有合适或有价值的话可说，就保持沉默。不要机械复述消息，也不要暴露插件内部流程。"
         )
         result = await self._ctx.maisaka.proactive.trigger(

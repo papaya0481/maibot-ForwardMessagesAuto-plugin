@@ -146,25 +146,24 @@ Host 的 `send.forward` capability 也会丢弃底层最终 `SessionMessage`，�
 插件无法取得目标群消息 ID。
 
 目标群 Planner 的 `reply` 工具只能按当前 Maisaka 历史中的消息 ID 查找真实
-`original_message`。插件通过 `maisaka.context.append` 写入的展开内容属于
-合成上下文，即使指定稳定 `message_id` 也没有 `original_message`，不能作为
-回复目标。
+`original_message`。旧版插件通过 `maisaka.context.append` 写入的展开内容
+属于合成上下文，即使指定稳定 `message_id` 也没有 `original_message`，不能
+作为回复目标，而且会在目标 prompt 中重复占用大量 token。
 
 Host 已支持 `sync_to_maisaka_history=True`，并会在平台成功回执后把目标消息
 ID 回填到最终 `SessionMessage`。但同步逻辑只查找已经存在的 Maisaka
-runtime；冷启动 target 在发送时尚无 runtime，会静默跳过同步。插件随后
-调用 `context.append` 虽能创建 runtime，却已错过真实发送消息。
+runtime；冷启动 target 在发送时尚无 runtime，会静默跳过同步。旧版插件
+随后调用 `context.append` 虽能创建 runtime，却已错过真实发送消息。
 
 #### 当前临时方案
 
 插件 `0.1.14` 起开启 `send.forward` 的 Maisaka 历史同步，并从主动任务
 metadata 中移除 source 消息 ID。Planner 仅被允许选择目标群上下文中刚刚
-真实发送的合并转发消息，不得使用 source ID 或 `cross-forward` 合成上下文
-ID。
+真实发送的合并转发消息，不得使用 source ID。
 
-该方案可覆盖 target runtime 已经存在的常见路径，但不保证冷启动 target。
-插件继续保持“物理发送成功后才注入上下文”的顺序，避免发送失败时留下虚假
-分享上下文。
+当前开发版本进一步移除重复注入原始转发段和源群完整展开内容的
+`maisaka.context.append`。该方案可覆盖 target runtime 已经存在的常见路径，
+但不保证冷启动 target；目标 Planner 无法可靠定位真实消息时必须保持沉默。
 
 #### 上游实施方向
 
@@ -178,7 +177,14 @@ ID。
    `original_message`，使 `reply.find_source_message_by_id()` 可以定位。
 4. 上游能力可用后，插件应持久化每个 target 的 `target_message_id`，并仅将
    该目标 ID 作为主动任务的回复锚点；重载恢复时不得退回 source ID。
-5. 为旧 Host 保留能力探测和兼容分支，直到插件最低 Host / SDK 版本允许
+5. 取得可靠的 `target_message_id` 后，插件再通过
+   `maisaka.context.append` 写入轻量纯文本提示。提示只包含目标 `msg_id`、
+   原始转发节点中的前四条消息预览及剩余条数；文本段需要限制单条长度，
+   图片、语音和表情只保留类型占位，不得再次包含完整展开内容、原始
+   `forward` 段或媒体二进制数据。
+6. 主动任务应引用同一个持久化目标 ID，并明确轻量提示只是前四条预览，
+   不得声称完整内容已经由插件重复写入上下文。
+7. 为旧 Host 保留能力探测和兼容分支，直到插件最低 Host / SDK 版本允许
    移除。
 
 #### 验收条件
@@ -186,6 +192,8 @@ ID。
 - target Maisaka runtime 在发送前不存在时，成功发送的真实消息仍会进入其
   历史，并带平台最终消息 ID 与非空 `original_message`；
 - `send.forward` 调用方能够取得与历史项一致的目标消息 ID；
+- 插件轻量提示只包含该目标 ID、前四条有界预览和剩余条数，不重复完整展开
+  内容、原始转发段或媒体二进制数据；
 - 目标 Planner 使用该 ID 调用 `reply` 时可以正常生成并发送回复；
 - source 与 target 消息 ID 在接口、日志和主动任务 metadata 中语义明确，
   不会跨聊天流混用；

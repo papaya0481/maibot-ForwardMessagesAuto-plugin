@@ -328,53 +328,6 @@ class BlockingSendCapability(FakeSendCapability):
         return await super().forward(messages, stream_id, **kwargs)
 
 
-class FakeMaisakaContextCapability:
-    def __init__(
-        self,
-        events: list[tuple[str, str]],
-        failed_streams: set[str] | None = None,
-    ) -> None:
-        """创建记录上下文写入并可定向失败的能力替身。
-
-        Args:
-            events: 所有 Fake capability 共享的事件列表。
-            failed_streams: 应返回模拟上下文失败的聊天流集合。
-        """
-
-        self.events = events
-        self.failed_streams = failed_streams or set()
-        self.visible_text_by_stream: dict[str, str] = {}
-
-    async def append(
-        self,
-        stream_id: str,
-        segments: list[dict[str, Any]],
-        *,
-        visible_text: str,
-        **kwargs: Any,
-    ) -> dict[str, Any]:
-        """验证并记录一次目标群 Maisaka 上下文追加。
-
-        Args:
-            stream_id: 接收上下文的目标聊天流 ID。
-            segments: 待写入的消息段；首段必须是 ``forward``。
-            visible_text: 目标 Planner 可读取的源群展开文本。
-            **kwargs: 本测试替身忽略的来源类型和消息 ID 等参数。
-
-        Returns:
-            目标位于 ``failed_streams`` 时返回模拟失败；否则保存
-            ``visible_text`` 并返回成功字典。
-        """
-
-        del kwargs
-        assert segments[0]["type"] == "forward"
-        self.events.append(("context", stream_id))
-        if stream_id in self.failed_streams:
-            return {"success": False, "error": "模拟上下文失败"}
-        self.visible_text_by_stream[stream_id] = visible_text
-        return {"success": True}
-
-
 class FakeMaisakaProactiveCapability:
     def __init__(self, events: list[tuple[str, str]]) -> None:
         """创建记录目标 Planner 触发顺序的能力替身。
@@ -388,7 +341,7 @@ class FakeMaisakaProactiveCapability:
         self.metadata_by_stream: dict[str, dict[str, Any]] = {}
 
     async def trigger(self, stream_id: str, intent: str, **kwargs: Any) -> dict[str, Any]:
-        """验证无需重复查看的意图并模拟主动任务入队。
+        """验证真实消息定位约束并模拟主动任务入队。
 
         Args:
             stream_id: 要触发 Planner 的目标聊天流 ID。
@@ -400,7 +353,8 @@ class FakeMaisakaProactiveCapability:
             包含 ``success=True``、``queued=True`` 和可预测任务 ID 的字典。
         """
 
-        assert "无需再次调用 view_forward_message" in intent
+        assert "无法可靠定位时请保持沉默" in intent
+        assert "完整内容已经写入当前上下文" not in intent
         metadata = kwargs.get("metadata")
         assert isinstance(metadata, dict)
         self.intents_by_stream[stream_id] = intent
@@ -417,7 +371,6 @@ class FakeContext:
         message: dict[str, Any],
         streams: list[dict[str, Any]],
         failed_streams: set[str] | None = None,
-        failed_context_streams: set[str] | None = None,
     ) -> None:
         """组装插件测试所需的最小 ``PluginContext`` 替身。
 
@@ -426,11 +379,10 @@ class FakeContext:
             message: 消息查询能力应返回的 source 消息。
             streams: 初始 QQ 群聊流列表。
             failed_streams: 应模拟物理发送失败的聊天流集合。
-            failed_context_streams: 应模拟 Maisaka 上下文失败的聊天流集合。
 
         Note:
-            ``events`` 在发送、上下文和 Planner 三种能力间共享，用于断言
-            跨 target 的全局调用顺序。
+            ``events`` 在发送和 Planner 能力间共享，用于断言跨 target 的
+            全局调用顺序。
         """
 
         self.logger = logging.getLogger("test.forward-plugin")
@@ -440,7 +392,6 @@ class FakeContext:
         self.chat = FakeChatCapability(streams)
         self.send = FakeSendCapability(self.events, failed_streams)
         self.maisaka = SimpleNamespace(
-            context=FakeMaisakaContextCapability(self.events, failed_context_streams),
             proactive=FakeMaisakaProactiveCapability(self.events),
         )
 
@@ -449,7 +400,6 @@ def build_plugin(
     tmp_path: Path,
     *,
     failed_streams: set[str] | None = None,
-    failed_context_streams: set[str] | None = None,
     target_groups: list[str] | None = None,
     view_failure_fallback_threshold: int = 2,
 ) -> ForwardMessagesAutoPlugin:
@@ -458,7 +408,6 @@ def build_plugin(
     Args:
         tmp_path: pytest 提供的临时目录，用于隔离持久化状态文件。
         failed_streams: 应由发送能力模拟失败的目标聊天流集合。
-        failed_context_streams: 应由上下文能力模拟失败的目标聊天流集合。
         target_groups: 可选的 target 群号配置；省略时使用两个默认目标群。
         view_failure_fallback_threshold: 允许摘要或预览降级前，同一消息需要
             连续累计的可重试查看故障次数。
@@ -496,7 +445,6 @@ def build_plugin(
             message=build_forward_message(),
             streams=streams,
             failed_streams=failed_streams,
-            failed_context_streams=failed_context_streams,
         )
     )
     return plugin
@@ -1158,7 +1106,7 @@ async def test_tool_rejects_unviewed_and_single_failure_before_fallback(tmp_path
     assert fallback_result["success"] is True
     assert fallback_result["accepted"] is True
     await wait_for_background_tasks(plugin)
-    assert "两次失败后的降级摘要" in plugin.ctx.maisaka.context.visible_text_by_stream["target-a"]
+    assert plugin.ctx.events[:2] == [("send", "target-a"), ("planner", "target-a")]
     await plugin.on_unload()
 
 
@@ -1212,7 +1160,7 @@ async def test_tool_uses_configured_view_failure_fallback_threshold(tmp_path: Pa
     assert at_threshold["success"] is True
     assert at_threshold["accepted"] is True
     await wait_for_background_tasks(plugin)
-    assert "三次失败后的降级摘要" in plugin.ctx.maisaka.context.visible_text_by_stream["target-a"]
+    assert plugin.ctx.events[:2] == [("send", "target-a"), ("planner", "target-a")]
     await plugin.on_unload()
 
 
@@ -1306,7 +1254,7 @@ async def test_empty_view_content_allows_one_diagnostic_retry_before_fallback(
     assert second_result["success"] is True
     assert second_result["accepted"] is True
     await wait_for_background_tasks(plugin)
-    assert "连续空内容后的降级摘要" in plugin.ctx.maisaka.context.visible_text_by_stream["target-a"]
+    assert plugin.ctx.events[:2] == [("send", "target-a"), ("planner", "target-a")]
     await plugin.on_unload()
 
 
@@ -1385,11 +1333,11 @@ async def test_tool_waits_for_real_delivery_before_reporting_success(tmp_path: P
 
 @pytest.mark.asyncio
 async def test_tool_sends_targets_in_order_and_deduplicates(tmp_path: Path) -> None:
-    """验证多目标严格按阶段顺序处理，并对完成任务执行去重。
+    """验证多目标严格按发送与 Planner 顺序处理，并对完成任务执行去重。
 
-    首次请求应依次产生 target-a 的 send/context/planner，再处理 target-b，
-    且上下文复用源群当前查看结果。第二次相同请求应返回 ``accepted=False``，发送
-    事件总数保持为二。该测试防止并行或乱序投递、重复媒体读取和重复转发。
+    首次请求应依次产生 target-a 的 send/planner，再处理 target-b，且不再
+    追加源群展开内容。第二次相同请求应返回 ``accepted=False``，发送事件
+    总数保持为二。该测试防止并行或乱序投递、重复上下文和重复转发。
 
     Args:
         tmp_path: pytest 提供的临时目录，用于检查 ``forward_state.json``。
@@ -1414,21 +1362,18 @@ async def test_tool_sends_targets_in_order_and_deduplicates(tmp_path: Path) -> N
 
     assert plugin.ctx.events == [
         ("send", "target-a"),
-        ("context", "target-a"),
         ("planner", "target-a"),
         ("send", "target-b"),
-        ("context", "target-b"),
         ("planner", "target-b"),
     ]
-    assert "完整展开内容" in plugin.ctx.maisaka.context.visible_text_by_stream["target-a"]
     assert plugin.ctx.maisaka.proactive.metadata_by_stream["target-a"] == {
         "job_id": result["job_id"],
     }
     assert "source_message_id" not in plugin.ctx.maisaka.proactive.metadata_by_stream["target-a"]
     target_intent = plugin.ctx.maisaka.proactive.intents_by_stream["target-a"]
-    assert "使用它在本群中的 msg_id" in target_intent
+    assert "只能选择该真实消息" in target_intent
     assert "不要使用源群消息 ID" in target_intent
-    assert "cross-forward" in target_intent
+    assert "完整内容已经写入当前上下文" not in target_intent
     assert plugin.ctx.message.calls == [("forward-message", "source-stream", True)]
 
     repeated = await plugin.request_cross_group_forward(
@@ -1486,7 +1431,6 @@ async def test_new_target_does_not_resend_completed_existing_target(tmp_path: Pa
 
     assert expanded_plugin.ctx.events == [
         ("send", "target-b"),
-        ("context", "target-b"),
         ("planner", "target-b"),
     ]
     await expanded_plugin.on_unload()
@@ -1499,8 +1443,9 @@ async def test_legacy_route_jobs_migrate_and_preserve_highest_target_stage(
     """验证 v0.1.11 路由级状态会合并且不按旧时间清理。
 
     状态文件预置两个具有极早时间戳的旧任务：target-a 已完成，target-b
-    已发送但未写上下文。加载后请求应只恢复 target-b 的上下文和 Planner，
-    不向任何 target 重复物理发送。该测试防止升级时丢失永久防重记录。
+    停留在旧版 ``context_appended``。加载后请求应只恢复 target-b 的
+    Planner，不向任何 target 重复物理发送。该测试防止移除合成上下文阶段
+    后丢失永久防重记录。
 
     Args:
         tmp_path: pytest 提供的临时状态目录，用于写入旧版状态文件。
@@ -1528,7 +1473,7 @@ async def test_legacy_route_jobs_migrate_and_preserve_highest_target_stage(
                 "target_group_ids": ["20002"],
                 "created_at": 0,
                 "updated_at": 0,
-                "targets": {"20002": "sent"},
+                "targets": {"20002": "context_appended"},
             },
         },
     }
@@ -1550,7 +1495,6 @@ async def test_legacy_route_jobs_migrate_and_preserve_highest_target_stage(
     await wait_for_background_tasks(plugin)
 
     assert plugin.ctx.events == [
-        ("context", "target-b"),
         ("planner", "target-b"),
     ]
     await plugin.on_unload()
@@ -1707,12 +1651,12 @@ async def test_source_group_cannot_read_message_from_another_stream(tmp_path: Pa
 
 
 @pytest.mark.asyncio
-async def test_send_failure_skips_context_but_continues_next_target(tmp_path: Path) -> None:
-    """验证单个 target 发送失败不会污染上下文或中断后续 target。
+async def test_send_failure_skips_planner_but_continues_next_target(tmp_path: Path) -> None:
+    """验证单个 target 发送失败不会触发 Planner 或中断后续 target。
 
-    target-a 模拟物理发送失败，期望不出现其 context/planner 事件；target-b
-    仍应完成 send/context/planner。该测试防止失败消息被错误写入 Maisaka
-    上下文，也防止一个群的故障阻塞整个路由。
+    target-a 模拟物理发送失败，期望不出现其 planner 事件；target-b 仍应
+    完成 send/planner。该测试防止失败消息触发目标 Planner，也防止一个群
+    的故障阻塞整个路由。
 
     Args:
         tmp_path: pytest 提供的隔离状态目录。
@@ -1740,61 +1684,9 @@ async def test_send_failure_skips_context_but_continues_next_target(tmp_path: Pa
     assert plugin.ctx.events == [
         ("send", "target-a"),
         ("send", "target-b"),
-        ("context", "target-b"),
         ("planner", "target-b"),
     ]
     await plugin.on_unload()
-
-
-@pytest.mark.asyncio
-async def test_persisted_stage_resumes_without_sending_again(tmp_path: Path) -> None:
-    """验证插件重载后从持久化阶段继续而不重复物理发送。
-
-    第一个实例让 target-a 发送成功但上下文失败，同时完成 target-b；第二个
-    实例读取同一状态目录后，应只为 target-a 重试 context/planner，不再
-    产生 send 事件。该测试防止进程重启或临时 capability 故障导致群内
-    重复消息。
-
-    Args:
-        tmp_path: 两个插件实例共享的 pytest 临时状态目录。
-    """
-
-    first_plugin = build_plugin(tmp_path, failed_context_streams={"target-a"})
-    await first_plugin.on_load()
-    seed_successful_view(first_plugin)
-    first_result = await first_plugin.request_cross_group_forward(
-        "forward-message",
-        content_summary="降级摘要",
-        platform="qq",
-        group_id="10001",
-        stream_id="source-stream",
-    )
-    assert first_result["accepted"] is True
-    await wait_for_background_tasks(first_plugin)
-    assert first_plugin.ctx.events[:3] == [
-        ("send", "target-a"),
-        ("context", "target-a"),
-        ("send", "target-b"),
-    ]
-    await first_plugin.on_unload()
-
-    resumed_plugin = build_plugin(tmp_path)
-    await resumed_plugin.on_load()
-    seed_successful_view(resumed_plugin)
-    resumed_result = await resumed_plugin.request_cross_group_forward(
-        "forward-message",
-        content_summary="降级摘要",
-        platform="qq",
-        group_id="10001",
-        stream_id="source-stream",
-    )
-    assert resumed_result["accepted"] is True
-    await wait_for_background_tasks(resumed_plugin)
-    assert resumed_plugin.ctx.events == [
-        ("context", "target-a"),
-        ("planner", "target-a"),
-    ]
-    await resumed_plugin.on_unload()
 
 
 @pytest.mark.asyncio

@@ -6,6 +6,14 @@
 
 ## [Unreleased]
 
+### Changed
+
+- 目标投递流程改为 `send → proactive.trigger`，不再向目标 Maisaka 上下文
+  重复注入源群已经展开的完整内容和原始转发段。
+- 目标 Planner 无法可靠定位刚发送的真实合并转发消息时必须保持沉默；待
+  Host / SDK 返回目标消息 ID 后，再恢复带前四条预览的轻量提示。
+- 旧版 `context_appended` 持久化阶段继续按已发送状态兼容。
+
 ## [0.1.15] - 2026-07-25
 
 ### Added

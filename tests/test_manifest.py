@@ -11,16 +11,19 @@ from plugin import ForwardMessagesAutoPlugin
 
 
 def test_manifest_has_no_adapter_plugin_dependency() -> None:
-    """确保插件只声明通用 capabilities，而不把 SnowLuma 适配器建模为强依赖。
+    """确保 Manifest 不声明适配器依赖或已移除的上下文能力。
 
-    预期 Manifest 的 ``dependencies`` 为空，避免适配器尚未激活时阻止插件加载。
-    该测试防止未来因运行环境验证范围而重新加入未被调用的适配器 API 依赖。
+    预期 ``dependencies`` 为空、保留主动任务能力但不再申请
+    ``maisaka.context.append``。该测试防止适配器尚未激活时阻止插件加载，
+    或删除重复上下文调用后仍保留多余权限。
     """
 
     manifest_path = Path(__file__).parents[1] / "_manifest.json"
     manifest: dict[str, Any] = json.loads(manifest_path.read_text(encoding="utf-8"))
 
     assert manifest["dependencies"] == []
+    assert "maisaka.context.append" not in manifest["capabilities"]
+    assert "maisaka.proactive.trigger" in manifest["capabilities"]
 
 
 def test_manifest_and_default_config_versions_match_source_constants() -> None:

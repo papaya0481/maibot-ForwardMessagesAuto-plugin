@@ -69,7 +69,7 @@ class ForwardRequestService:
         """校验转发请求、读取源消息并等待真实投递结果。
 
         处理顺序包括调用环境校验、source 消息归属校验、合并转发节点解析、
-        展开内容选择和幂等判断。所有校验通过后创建受生命周期管理的投递
+        查看资格判断和幂等检查。所有校验通过后创建受生命周期管理的投递
         任务，并等待全部 target 按顺序完成或失败，再向 Planner 返回聚合
         结果；调用方取消等待时不会连带取消已经开始的投递。
 
@@ -114,15 +114,15 @@ class ForwardRequestService:
         forward_payload = ForwardMessageParser.extract(message)
         if forward_payload is None:
             return self.failure("指定消息不是可发送的合并转发消息。")
-        forward_segment, forward_messages = forward_payload
-        expanded_content = self._resolve_expanded_content(
+        _forward_segment, forward_messages = forward_payload
+        eligibility_content = self._resolve_view_eligibility_content(
             source_stream_id,
             source_message_id,
             content_summary,
             message,
         )
-        if isinstance(expanded_content, dict):
-            return expanded_content
+        if isinstance(eligibility_content, dict):
+            return eligibility_content
 
         state_key = self._state.build_state_key(
             source_stream_id,
@@ -140,9 +140,7 @@ class ForwardRequestService:
             source_group_id=source_group_id,
             source_message_id=source_message_id,
             target_group_ids=target_group_ids,
-            forward_segment=forward_segment,
             forward_messages=forward_messages,
-            expanded_content=expanded_content,
             sharing_reason=str(sharing_reason or "").strip(),
         )
         delivery_task = self._delivery.schedule(job)
@@ -334,19 +332,20 @@ class ForwardRequestService:
             return "指定消息不是 QQ 群聊消息。"
         return ""
 
-    def _resolve_expanded_content(
+    def _resolve_view_eligibility_content(
         self,
         source_stream_id: str,
         source_message_id: str,
         content_summary: str,
         message: dict[str, Any],
     ) -> str | dict[str, Any]:
-        """选择完整内容，并仅在明确不可推进时允许降级。
+        """验证 source Planner 的内容查看资格，并在明确条件下允许降级。
 
         当前上下文中的有效成功查看始终优先且不按时间过期。参数或消息错误
         要求修正，非合并转发和未知错误会阻止任务；可重试故障只有连续次数
         达到配置阈值才允许降级，空内容则允许一次诊断重试。查看结果已被
-        上下文裁剪时必须重新查看，不能按过期使用摘要。
+        上下文裁剪时必须重新查看，不能按过期使用摘要。返回的文本只证明
+        source 侧已具备分享判断依据，不会注入 target 上下文。
 
         Args:
             source_stream_id: 源消息所属聊天流 ID。
@@ -355,8 +354,9 @@ class ForwardRequestService:
             message: Host 源消息，用于读取 ``processed_plain_text`` 预览。
 
         Returns:
-            可用时返回非空目标群上下文文本；尚应继续尝试查看时返回
-            ``{"success": False, "content": ...}``，阻止创建转发任务。
+            可用时返回用于证明 source 查看资格的非空文本；尚应继续尝试
+            查看时返回 ``{"success": False, "content": ...}``，阻止创建
+            转发任务。
         """
 
         lookup = self._view_eligibility.lookup(
@@ -464,7 +464,7 @@ class ForwardRequestService:
     ) -> dict[str, Any] | None:
         """判断请求是否正在处理或已完成当前路由。
 
-        当目标群 Planner 功能关闭时，以 ``CONTEXT_APPENDED`` 为完成标准；
+        当目标群 Planner 功能关闭时，以 ``SENT`` 为完成标准；
         开启时要求所有目标达到 ``PLANNER_QUEUED``。
 
         Args:
@@ -486,9 +486,7 @@ class ForwardRequestService:
                 "completed": False,
                 "status": "processing",
             }
-        required_stage = (
-            TargetStage.PLANNER_QUEUED if self.config.behavior.trigger_target_planner else TargetStage.CONTEXT_APPENDED
-        )
+        required_stage = TargetStage.PLANNER_QUEUED if self.config.behavior.trigger_target_planner else TargetStage.SENT
         if self._state.is_complete(state_key, target_group_ids, required_stage):
             return {
                 "success": True,

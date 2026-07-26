@@ -12,6 +12,7 @@ class TargetStage(IntEnum):
 
     PENDING = 0
     SENT = 1
+    # 兼容 v0.1.15 及更早版本的持久化状态；新投递不再写入合成上下文。
     CONTEXT_APPENDED = 2
     PLANNER_QUEUED = 3
 
@@ -102,9 +103,7 @@ class ForwardJob:
     source_group_id: str
     source_message_id: str
     target_group_ids: list[str]
-    forward_segment: dict[str, Any]
     forward_messages: list[dict[str, Any]]
-    expanded_content: str
     sharing_reason: str
 
 

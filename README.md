@@ -71,14 +71,14 @@ Planner 提供的 `content_summary` 和原消息预览降级。参数或消息�
 每个目标群分别记录以下阶段：
 
 ```text
-sent → context_appended → planner_queued
+sent → planner_queued
 ```
 
 状态按 `source stream + msg_id + target` 永久保存在 MaiBot 为插件分配的
-数据目录中，不按时间清理。若发送已经成功，但上下文写入或 Planner 入队
-失败，再次发起同一请求时会从未完成阶段继续。路由新增 target 时只处理
-新群，不会重复发送已经完成的旧 target。`v0.1.11` 的路由级状态会在加载时
-自动合并到新结构。
+数据目录中，不按时间清理。若发送已经成功，但 Planner 入队失败，再次发起
+同一请求时会从未完成阶段继续。旧版本的 `context_appended` 状态继续按已发送
+处理；路由新增 target 时只处理新群，不会重复发送已经完成的旧 target。
+`v0.1.11` 的路由级状态会在加载时自动合并到新结构。
 
 单个 target 失败不会阻止后续 target。当前版本只保证发送和主动任务入队按白名单顺序发生；不同目标群的 Planner 可能在入队后并发推理。
 转发 Tool 只有在全部 target 完成当前要求的处理阶段后才返回成功；部分失败
@@ -86,8 +86,10 @@ sent → context_appended → planner_queued
 转发成功。
 
 当前 Host 仅在目标群 Maisaka runtime 已经存在时同步真实发送消息；冷启动
-目标群仍可能缺少可供 `reply` 定位的真实消息。插件不会为规避该限制而在
-物理发送前注入上下文，以免发送失败时留下虚假分享记录。所需 Host 改进见
+目标群仍可能缺少可供 `reply` 定位的真实消息。插件当前不再重复注入源群已
+展开的完整内容；目标 Planner 无法可靠定位真实转发消息时必须保持沉默。
+待 Host 返回目标消息 ID 并可靠同步后，再追加只含目标 ID 和前四条预览的
+轻量提示，详见
 [TODO-003](docs/TODO.md#todo-003让发送能力返回目标消息并可靠同步至-maisaka-历史)。
 
 ## 测试
