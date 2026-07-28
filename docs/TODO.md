@@ -18,7 +18,7 @@
 | --- | --- | --- | --- | --- |
 | `TODO-001` | 由 Host 向 Planner Hook 暴露结构化 ToolResult 状态 | 等待上游 | MaiBot Host | 中 |
 | `TODO-002` | 将未消费的成功查看结果保留至当前决策结束 | 等待上游 | MaiBot Host | 低 |
-| `TODO-003` | 让发送能力返回目标消息并可靠同步至 Maisaka 历史 | 等待上游 | MaiBot Host / SDK | 高 |
+| `TODO-003` | 让发送能力返回平台最终目标消息 ID | 等待上游 | MaiBot Host / SDK | 高 |
 | `TODO-004` | 保留发送失败在 Host、SDK 与插件之间的结构化原因 | 等待上游 | MaiBot Host / SDK | 高 |
 
 ## 待办事项
@@ -131,7 +131,7 @@ tool call 与 ToolResult；不得只注入一段声称“已经查看”的提�
 - 内容超过模型预算时明确要求重新查看，不静默使用摘要降级；
 - 现有“结果不在实际上下文中即无转发资格”的安全边界不被绕过。
 
-### TODO-003：让发送能力返回目标消息并可靠同步至 Maisaka 历史
+### TODO-003：让发送能力返回平台最终目标消息 ID
 
 - 状态：等待上游
 - 依赖：MaiBot Host / maibot-plugin-sdk
@@ -141,19 +141,25 @@ tool call 与 ToolResult；不得只注入一段声称“已经查看”的提�
 #### 背景
 
 插件把 source 群中的合并转发发送到 target 群后，目标平台会分配新的消息
-ID。当前 `send.forward` 与其他 `send.*` SDK 方法只返回发送成功布尔值，
-Host 的 `send.forward` capability 也会丢弃底层最终 `SessionMessage`，因此
-插件无法取得目标群消息 ID。
+ID。MaiBot 发送服务会先用平台成功回执更新最终 `SessionMessage.message_id`，
+但 Host 的 `send.forward` capability 随后只返回发送成功布尔值；SDK 又把
+`send.forward` 归一化为 `bool`，因此最终目标消息 ID 在 Host 与 SDK 边界
+丢失，插件无法取得或持久化它。
 
 目标群 Planner 的 `reply` 工具只能按当前 Maisaka 历史中的消息 ID 查找真实
 `original_message`。旧版插件通过 `maisaka.context.append` 写入的展开内容
 属于合成上下文，即使指定稳定 `message_id` 也没有 `original_message`，不能
 作为回复目标，而且会在目标 prompt 中重复占用大量 token。
 
-Host 已支持 `sync_to_maisaka_history=True`，并会在平台成功回执后把目标消息
-ID 回填到最终 `SessionMessage`。但同步逻辑只查找已经存在的 Maisaka
-runtime；冷启动 target 在发送时尚无 runtime，会静默跳过同步。旧版插件
-随后调用 `context.append` 虽能创建 runtime，却已错过真实发送消息。
+当前 MaiBot `main` 已支持从消息库恢复最近上下文。本插件使用
+`storage_message=True`，平台最终消息 ID 会在落库前回填；目标会话尚未创建
+Maisaka 心流实例时，后续主动任务创建实例并启动后，可以从消息库恢复这条
+真实消息。恢复得到的历史项保留 `original_message`，因此“发送时没有心流
+实例就一定遗漏真实消息”不再是本项的主要问题。
+
+当前真正缺少的是调用方无法知道历史中那条目标消息的最终 ID。插件只能让
+Planner 自行从目标上下文中猜测刚发送的消息，无法为主动任务提供唯一回复
+锚点，也无法在重载恢复后核对已经发送的目标消息。
 
 #### 当前临时方案
 
@@ -161,20 +167,21 @@ runtime；冷启动 target 在发送时尚无 runtime，会静默跳过同步。
 metadata 中移除 source 消息 ID。Planner 仅被允许选择目标群上下文中刚刚
 真实发送的合并转发消息，不得使用 source ID。
 
-当前开发版本进一步移除重复注入原始转发段和源群完整展开内容的
-`maisaka.context.append`。该方案可覆盖 target runtime 已经存在的常见路径，
-但不保证冷启动 target；目标 Planner 无法可靠定位真实消息时必须保持沉默。
+插件 `0.1.16` 起进一步移除重复注入原始转发段和源群完整展开内容的
+`maisaka.context.append`。在取得可靠的目标消息 ID 前，目标 Planner 只能尝试
+从当前真实历史中定位刚发送的合并转发；无法可靠定位时必须保持沉默。
 
 #### 上游实施方向
 
 1. 为发送能力提供向后兼容的详细结果接口或可选模式，至少返回
    `success`、最终目标 `message_id`，多驱动场景还应明确主回执及其他成功
    回执的消息 ID；不能直接破坏现有 SDK `send.* -> bool` 契约。
-2. 当 `sync_to_maisaka_history=True` 时，由 Host 确保目标 Maisaka runtime
-   已创建，再把平台回执更新后的真实 `SessionMessage` 写入历史；或者提供
-   无上下文副作用的 `maisaka.runtime.ensure` capability。
-3. 历史项必须通过 `SessionBackedMessage.from_session_message` 构造，保留
-   `original_message`，使 `reply.find_source_message_by_id()` 可以定位。
+2. 详细结果必须在平台成功回执更新 `SessionMessage.message_id` 之后生成；
+   单驱动场景返回唯一目标 ID，多驱动场景应区分主回执 ID 与其他成功回执
+   ID，不能返回发送前的临时 ID。
+3. SDK 必须为详细结果保留结构化字段，不能再把它压缩成 `bool`。可以新增
+   明确的详细发送方法，或为现有方法增加显式结果模式；旧调用方式继续返回
+   布尔值。
 4. 上游能力可用后，插件应持久化每个 target 的 `target_message_id`，并仅将
    该目标 ID 作为主动任务的回复锚点；重载恢复时不得退回 source ID。
 5. 取得可靠的 `target_message_id` 后，插件再通过
@@ -184,21 +191,25 @@ metadata 中移除 source 消息 ID。Planner 仅被允许选择目标群上下�
    `forward` 段或媒体二进制数据。
 6. 主动任务应引用同一个持久化目标 ID，并明确轻量提示只是前四条预览，
    不得声称完整内容已经由插件重复写入上下文。
-7. 为旧 Host 保留能力探测和兼容分支，直到插件最低 Host / SDK 版本允许
-   移除。
+7. 发送失败不得返回虚假目标 ID；插件应保留已发送 target 的持久化阶段，
+   避免后续触发或提示失败导致重复物理发送。
+8. 为旧 Host 保留能力探测和兼容分支，直到插件最低 Host / SDK 版本允许
+   移除。现有消息落库、心流实例启动恢复和真实历史构造路径应保留回归测试，
+   但不再要求为了本项预先创建心流实例。
 
 #### 验收条件
 
-- target Maisaka runtime 在发送前不存在时，成功发送的真实消息仍会进入其
-  历史，并带平台最终消息 ID 与非空 `original_message`；
-- `send.forward` 调用方能够取得与历史项一致的目标消息 ID；
+- `send.forward` 的详细结果调用方能够取得平台最终确认的目标消息 ID，且
+  该 ID 与 Maisaka 真实历史项完全一致；
+- 现有只读取布尔结果的 `send.forward` 调用方无需修改且行为不变；
 - 插件轻量提示只包含该目标 ID、前四条有界预览和剩余条数，不重复完整展开
   内容、原始转发段或媒体二进制数据；
 - 目标 Planner 使用该 ID 调用 `reply` 时可以正常生成并发送回复；
 - source 与 target 消息 ID 在接口、日志和主动任务 metadata 中语义明确，
   不会跨聊天流混用；
-- 发送失败时不创建虚假目标上下文，重试也不会重复物理发送；
-- 单驱动、多驱动、冷启动 runtime 和插件重载恢复路径均有 Host 级测试。
+- 发送失败时不返回虚假目标 ID，重试也不会重复物理发送；
+- 单驱动、多驱动、目标会话已有或尚未创建 Maisaka 心流实例，以及插件重载
+  恢复路径均有 Host / SDK 级测试。
 
 ### TODO-004：保留发送失败在 Host、SDK 与插件之间的结构化原因
 
