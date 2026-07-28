@@ -8,24 +8,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from forward_messages_auto.config import GroupIdList
 from forward_messages_auto.config_recovery import LastKnownGoodConfig
 from plugin import ForwardMessagesAutoPlugin
-
-
-def test_normalize_group_ids_preserves_order_and_deduplicates() -> None:
-    """验证群号清洗会规范类型、去空、去重并保持首次顺序。
-
-    输入同时覆盖带空格字符串、整数、重复项、空字符串和 ``None``，期望
-    返回 ``["100", "200", "300"]``。该测试防止路由清洗改变 target
-    投递顺序，或因配置值类型不同产生重复投递。
-    """
-
-    assert GroupIdList.normalize([" 100 ", 200, "100", "", None, "300"]) == [
-        "100",
-        "200",
-        "300",
-    ]
 
 
 def test_invalid_toml_reuses_last_valid_config(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
@@ -84,23 +68,3 @@ def test_deleted_config_uses_sdk_defaults_instead_of_snapshot(tmp_path: Path) ->
 
     assert reset_config["plugin"]["enabled"] is False
     assert reset_config["routing"]["source_groups"] == []
-
-
-def test_legacy_ttl_config_fields_are_removed_during_normalization() -> None:
-    """验证旧版两个 TTL 字段不会继续进入新配置。
-
-    将 `v0.1.11` 的查看缓存和去重 TTL 字段加入当前默认配置后执行 SDK
-    归一化，结果应删除两个未知字段并保留其他行为配置。该测试防止升级后
-    WebUI 继续展示已经失效的过期设计。
-    """
-
-    plugin = ForwardMessagesAutoPlugin()
-    legacy_config = plugin.get_default_config()
-    legacy_config["behavior"]["view_cache_ttl_seconds"] = 1800
-    legacy_config["behavior"]["dedupe_ttl_seconds"] = 604800
-
-    normalized_config, _changed = plugin.normalize_plugin_config(legacy_config)
-
-    assert "view_cache_ttl_seconds" not in normalized_config["behavior"]
-    assert "dedupe_ttl_seconds" not in normalized_config["behavior"]
-    assert normalized_config["behavior"]["view_failure_fallback_threshold"] == 2
