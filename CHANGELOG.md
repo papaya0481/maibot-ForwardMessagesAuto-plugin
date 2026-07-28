@@ -6,6 +6,15 @@
 
 ## [Unreleased]
 
+## [0.1.17] - 2026-07-28
+
+### Changed
+
+- 按配置、解析、查看上下文、运行时和转发投递职责拆分插件测试，并将共享
+  测试替身集中到支持模块。
+- 精简仅覆盖通用群号清洗和已淘汰 TTL 字段移除的低价值配置测试，保留配置
+  恢复与重置的关键回归边界。
+
 ## [0.1.16] - 2026-07-26
 
 ### Changed
@@ -195,7 +204,8 @@
 - 新增分阶段持久化状态与幂等恢复，避免后续步骤失败时重复发送。
 - 新增测试，覆盖缓存、白名单、消息节点、顺序投递、失败隔离和去重。
 
-[Unreleased]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.16...HEAD
+[Unreleased]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.17...HEAD
+[0.1.17]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.16...v0.1.17
 [0.1.16]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.15...v0.1.16
 [0.1.15]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.14...v0.1.15
 [0.1.14]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.13...v0.1.14
