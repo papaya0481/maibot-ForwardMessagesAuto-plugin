@@ -373,16 +373,24 @@ async def test_tool_sends_targets_in_order_and_deduplicates(tmp_path: Path) -> N
 
 
 @pytest.mark.asyncio
-async def test_legacy_boolean_send_result_keeps_safe_reply_fallback(tmp_path: Path) -> None:
-    """验证旧 Host 的布尔发送结果仍能投递且不会生成虚假回复锚点。
+@pytest.mark.parametrize(
+    "send_result",
+    [True, {"sent": True, "message_id": None}],
+)
+async def test_send_result_without_message_id_keeps_safe_reply_fallback(
+    tmp_path: Path,
+    send_result: bool | dict[str, object],
+) -> None:
+    """验证发送成功但缺少目标消息 ID 时仍沿用安全回复 fallback。
 
-    发送替身模拟旧 Host 在接收 ``return_details`` 后仍只返回 ``True``。
-    期望插件继续触发 Planner，但 metadata 不包含目标消息 ID，意图要求无法
-    可靠定位时保持沉默，持久化状态也不伪造 ID。该测试防止详细结果支持
-    破坏旧 Host 兼容性。
+    发送替身分别模拟旧 Host 的布尔成功结果，以及详细结果中没有最终
+    ``message_id`` 的成功响应。期望插件继续触发 Planner，但 metadata 不
+    包含目标消息 ID，意图要求无法可靠定位时保持沉默，持久化状态也不伪造
+    ID。该测试防止详细结果支持破坏无 ID fallback。
 
     Args:
         tmp_path: pytest 提供的隔离状态目录，用于检查兼容状态持久化。
+        send_result: pytest 参数化提供的无目标消息 ID 发送成功结果。
     """
 
     plugin = build_plugin(tmp_path, target_groups=["20001"])
@@ -391,8 +399,8 @@ async def test_legacy_boolean_send_result_keeps_safe_reply_fallback(tmp_path: Pa
         messages: list[dict[str, object]],
         stream_id: str,
         **kwargs: object,
-    ) -> bool:
-        """模拟忽略详细结果参数并返回布尔值的旧 Host。
+    ) -> bool | dict[str, object]:
+        """模拟发送成功但没有返回最终目标消息 ID 的 Host。
 
         Args:
             messages: 插件传入的原始转发节点。
@@ -400,13 +408,13 @@ async def test_legacy_boolean_send_result_keeps_safe_reply_fallback(tmp_path: Pa
             **kwargs: 插件传入的发送选项，用于确认仍请求详细结果。
 
         Returns:
-            始终返回 ``True``，表示旧 Host 已完成物理发送。
+            pytest 参数化提供的布尔值或详细成功结果。
         """
 
         assert messages
         assert kwargs["return_details"] is True
         plugin.ctx.events.append(("send", stream_id))
-        return True
+        return send_result
 
     plugin.ctx.send.forward = legacy_forward
     await plugin.on_load()

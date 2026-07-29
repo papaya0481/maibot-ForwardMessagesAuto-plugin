@@ -171,10 +171,15 @@ metadata 中移除 source 消息 ID。Planner 仅被允许选择目标群上下�
 `maisaka.context.append`。在取得可靠的目标消息 ID 前，目标 Planner 只能尝试
 从当前真实历史中定位刚发送的合并转发；无法可靠定位时必须保持沉默。
 
-插件 `0.1.18` 请求 `send.forward(return_details=True)`，取得目标消息 ID
+插件 `0.1.18` 起请求 `send.forward(return_details=True)`，取得目标消息 ID
 时将它与 target 的已发送阶段一并持久化，并作为主动任务唯一的回复锚点。
 完整能力依赖配套 Host 分支 `1.1.2-send-forward-result`；旧 Host 仍只返回
 布尔结果时继续使用上述保守定位规则。
+
+插件 `0.1.19` 明确保留无目标 ID 的 fallback。无论 Host 返回旧布尔成功结果，
+还是返回 `sent=True` 但 `message_id=None` 的详细结果，插件都不会重新发送，
+而是保留已发送阶段并沿用从目标真实历史定位消息的旧方法；无法可靠定位时
+要求 Planner 保持沉默。
 
 #### 上游实施方向
 
@@ -195,6 +200,21 @@ metadata 中移除 source 消息 ID。Planner 仅被允许选择目标群上下�
 6. 为旧 Host 保留能力探测和兼容分支，直到插件最低 Host 版本允许
    移除。现有消息落库、心流实例启动恢复和真实历史构造路径应保留回归测试，
    但不再要求为了本项预先创建心流实例。
+
+#### 旧兼容路径移除条件
+
+当前不得删除无 `message_id` fallback。只有同时满足以下条件后，才能在后续
+维护版本中移除：
+
+1. `send.forward(return_details=True)` 的详细结果契约已经合并到 MaiBot
+   上游 `dev` 和 `main`，并进入正式 Host 版本，而不是只存在于配套分支；
+2. 插件 manifest 的最低 Host 版本已经提高到首个包含该契约的正式版本；
+3. 插件支持的适配器已经验证会在发送成功后稳定返回平台最终消息 ID，不会
+   把 `send_api_*` 临时 ID 或空值当作最终 ID；
+4. 已明确处理旧状态文件中 `SENT` 但没有 `target_message_id` 的任务。不得为
+   补取 ID 重发消息；必要时应继续为这些遗留任务保留只读恢复 fallback；
+5. 移除时同步删除无 ID 的 Planner 意图分支及对应兼容测试，并更新 README、
+   设计文档和 Changelog。
 
 #### 验收条件
 

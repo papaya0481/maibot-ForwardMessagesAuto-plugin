@@ -6,6 +6,19 @@
 
 ## [Unreleased]
 
+## [0.1.19] - 2026-07-29
+
+### Changed
+
+- 明确保留 `send.forward` 未返回最终 `message_id` 时的 fallback：实际发送
+  成功后仍推进持久化阶段，并让目标 Planner 尝试从真实历史定位刚发送的
+  合并转发；无法可靠定位时继续保持沉默。
+- fallback 同时兼容旧 Host 的布尔成功结果，以及详细结果中
+  `message_id=None` 的情况；不会为了补取 ID 重复物理发送。
+- 在 TODO-003 中记录旧兼容路径的移除条件。只有 Host 契约正式合并发布、
+  支持的适配器稳定返回平台最终 ID，并处理完无 ID 的遗留持久化状态后，才
+  允许删除 fallback。
+
 ## [0.1.18] - 2026-07-29
 
 ### Changed
@@ -220,7 +233,8 @@
 - 新增分阶段持久化状态与幂等恢复，避免后续步骤失败时重复发送。
 - 新增测试，覆盖缓存、白名单、消息节点、顺序投递、失败隔离和去重。
 
-[Unreleased]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.18...HEAD
+[Unreleased]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.19...HEAD
+[0.1.19]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.18...v0.1.19
 [0.1.18]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.17...v0.1.18
 [0.1.17]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.16...v0.1.17
 [0.1.16]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.15...v0.1.16
