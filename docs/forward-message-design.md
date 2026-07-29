@@ -100,9 +100,10 @@ Target 是接收合并转发消息的目标群聊。只有列入 target 白名�
 后台任务按照 target 白名单中的配置顺序逐个执行：
 
 1. 解析 target 的精确聊天流；
-2. 使用源消息保存的原始转发节点调用 `ctx.send.forward`；
-3. 发送成功后，调用 `ctx.maisaka.proactive.trigger` 强制触发一轮目标群 Planner；
-4. 记录该 target 的发送和 Planner 入队结果；
+2. 使用源消息保存的原始转发节点调用
+   `ctx.send.forward(return_details=True)`；
+3. 发送成功后，将平台最终目标消息 ID 与 `sent` 阶段一并持久化；
+4. 调用 `ctx.maisaka.proactive.trigger`，携带目标消息 ID 并强制触发一轮目标群 Planner；
 5. 继续处理下一个 target。
 
 初版“顺序处理”的含义是发送动作和主动任务入队按 target 顺序发生。当前 SDK 的主动任务接口只确认任务已经入队，没有等待 Planner 完成或取得最终回复状态的接口。因此，不保证目标 A 的 Planner 已经推理或回复完成后，目标 B 才开始推理。
@@ -192,24 +193,26 @@ Hook 都必须以当前 Planner 上下文为准，同步移除已经不可见的
 
 ### 5.4 目标群上下文
 
-发送能力应开启 Maisaka 历史同步，使目标群运行时已经存在时，Host 能把带
-目标平台消息 ID 和原始消息对象的真实发送消息写入历史，供 ``reply`` 定位。
-当前插件不再通过 `maisaka.context.append` 重复写入原始转发段或源群展开的
-完整内容，以避免同一内容在目标 Planner prompt 中重复占用 token。
+发送能力应开启 Maisaka 历史同步。目标群 Maisaka 已经启动时，Host 会把带
+平台最终消息 ID 和原始消息对象的真实发送消息直接写入当前历史；尚未启动
+时，真实发送消息仍会保存到消息库，并在 Maisaka 启动时恢复到最近上下文。
+插件不再通过 `maisaka.context.append` 重复写入原始转发段或源群展开的完整
+内容，以避免同一内容在目标 Planner prompt 中重复占用 token。
 
-当前 Host 只会向已经存在的 Maisaka runtime 同步真实发送消息，且
-`send.forward` 不返回目标平台消息 ID。冷启动 target 因此可能无法在本轮
-Planner 上下文中可靠定位真实消息。插件暂不构造无目标 ID 的合成提示；待
-上游补齐目标 ID 返回与冷启动同步后，再追加只包含目标 `msg_id`、前四条
-消息预览和剩余条数的轻量文本提示，详见 [TODO-003](TODO.md#todo-003让发送能力返回目标消息并可靠同步至-maisaka-历史)。
+插件通过 `send.forward(return_details=True)` 取得平台成功回执更新后的最终
+目标消息 ID，并与 `sent` 阶段一并持久化。旧 Host 只返回布尔结果时仍可完成
+发送，但插件不会伪造 ID；目标 Planner 无法可靠定位真实消息时保持沉默。
+通用 Host 返回契约见
+[TODO-003](TODO.md#todo-003让发送能力返回平台最终目标消息-id)。
 
 ## 6. 目标群看法
 
 发送成功后，插件应通过 `ctx.maisaka.proactive.trigger` 发起主动任务。意图应表达：
 
 - 麦麦刚刚把一则来自其他群的合并转发分享到了本群；
-- 只有当前上下文能够可靠定位刚刚真实发送的合并转发消息时，才允许决定
-  评论并回复该真实消息；不能使用源群消息 ID；
+- 取得目标消息 ID 时，决定评论后只能用该 ID 回复刚刚真实发送的合并转发；
+- 旧 Host 未返回目标消息 ID 时，只有当前上下文能够可靠定位真实消息才允许
+  评论，且不能使用源群消息 ID；
 - 无法可靠定位真实消息时保持沉默；
 - 应结合本群近期聊天、群友关系、记忆和表达习惯判断是否回应；
 - 有自然且有价值的看法时，可以回复一句；
@@ -218,10 +221,10 @@ Planner 上下文中可靠定位真实消息。插件暂不构造无目标 ID �
 
 初版优先使用目标群 Maisaka Planner，而不是由插件内部单独调用 LLM 生成看法。这样能够复用目标群自己的关系、记忆、人格表达和正常回复工具链。
 
-主动任务 metadata 只携带任务 ID，不携带 source 消息 ID。当前 Host 在目标
-runtime 尚未创建时可能跳过真实发送消息的历史同步；插件不再用重复完整
-内容的合成上下文弥补该缺口。彻底解决该边界需要 Host 返回目标消息 ID 并
-可靠同步真实发送对象，详见 [TODO-003](TODO.md#todo-003让发送能力返回目标消息并可靠同步至-maisaka-历史)。
+主动任务 metadata 携带任务 ID；取得平台最终目标消息 ID 时同时携带该 ID，
+但始终不携带 source 消息 ID。插件不使用重复完整内容的合成上下文。Host
+详细返回的兼容边界见
+[TODO-003](TODO.md#todo-003让发送能力返回平台最终目标消息-id)。
 
 ## 7. 路由配置
 
@@ -316,6 +319,8 @@ trigger_target_planner = true
 - 自定义 `view_failure_fallback_threshold` 只改变可重试故障的降级次数；
 - 成功查看后续轮提醒在 Planner 被新消息打断时不会丢失；
 - 原始转发节点到 `ctx.send.forward` 参数转换；
+- 详细发送结果中的目标消息 ID 与 `sent` 阶段原子持久化；
+- 旧 Host 布尔发送结果仍能完成投递且不会伪造目标消息 ID；
 - 同一消息重复调用时的幂等处理；
 - 发送失败后不触发 Planner；
 - 投递过程不调用 `maisaka.context.append`；
@@ -327,8 +332,9 @@ trigger_target_planner = true
 - SnowLuma 下文字合并转发的跨群发送；
 - 包含图片、表情、语音的合并转发；
 - 一个 source 对多个 target 的顺序投递；
-- 已存在 runtime 时，真实发送消息能够同步到目标 Planner 上下文；
-- 冷启动 runtime 无法可靠定位真实消息时，目标 Planner 保持沉默；
+- 已启动 Maisaka 时，真实发送消息能够直接同步到目标 Planner 上下文；
+- 尚未启动 Maisaka 时，真实发送消息能够从消息库恢复到最近上下文；
+- 插件重载恢复后仍使用持久化的目标消息 ID，不退回 source ID；
 - 目标群 Planner 选择回复和选择沉默的两种路径；
 - 单个 target 发送失败时后续 target 仍继续执行；
 - 插件重载后不会重复转发已经处理的任务。
@@ -340,6 +346,7 @@ trigger_target_planner = true
 1. source Planner 先查看完整内容；
 2. 只有 Planner 判断值得分享时才调用插件工具；
 3. 两个 target 按配置顺序收到合并转发；
-4. 每个目标群在能够可靠定位真实转发消息时分别决定是否评论，否则保持沉默；
+4. 每个目标群取得各自的目标消息 ID，并分别决定是否评论；决定评论时只用
+   对应的目标 ID 回复；
 5. 同一 source 消息不会被再次转发；
 6. 非白名单群无法触发或接收消息。

@@ -26,16 +26,37 @@ class CapabilityResult:
 
         Args:
             result: MaiBot capability 返回值。兼容直接布尔值和包含
-                ``success`` 字段的字典。
+                ``success`` 或 ``sent`` 字段的字典。
 
         Returns:
-            布尔值原样返回；字典的 ``success`` 为真时返回 ``True``；
-            其他类型或缺失成功标记时返回 ``False``。
+            布尔值原样返回；字典的 ``sent`` 或 ``success`` 为真时返回
+            ``True``；其他类型或缺失成功标记时返回 ``False``。
         """
 
         if isinstance(result, bool):
             return result
-        return isinstance(result, dict) and bool(result.get("success", False))
+        if not isinstance(result, dict):
+            return False
+        if "sent" in result:
+            return bool(result.get("sent"))
+        return bool(result.get("success", False))
+
+    @staticmethod
+    def message_id(result: Any) -> str | None:
+        """从详细发送结果中提取平台最终目标消息 ID。
+
+        Args:
+            result: ``send.forward`` capability 返回值。
+
+        Returns:
+            详细结果包含非空 ``message_id`` 时返回清洗后的字符串；旧 Host
+            布尔结果、失败结果或缺少 ID 时返回 ``None``。
+        """
+
+        if not isinstance(result, dict) or not bool(result.get("sent")):
+            return None
+        message_id = str(result.get("message_id") or "").strip()
+        return message_id or None
 
     @staticmethod
     def error(result: Any) -> str:
@@ -257,8 +278,9 @@ class ForwardDeliveryService:
             )
 
         stage = self._state.get_target_stage(job.state_key, target_group_id)
+        target_message_id = self._state.get_target_message_id(job.state_key, target_group_id)
         if stage < TargetStage.SENT:
-            error = await self._send_forward(job, target_group_id, target_stream_id)
+            error, target_message_id = await self._send_forward(job, target_group_id, target_stream_id)
             if error is not None:
                 return TargetDeliveryResult(
                     target_group_id=target_group_id,
@@ -276,7 +298,12 @@ class ForwardDeliveryService:
                 success=True,
             )
         if stage < TargetStage.PLANNER_QUEUED:
-            error = await self._trigger_planner(job, target_group_id, target_stream_id)
+            error = await self._trigger_planner(
+                job,
+                target_group_id,
+                target_stream_id,
+                target_message_id,
+            )
             if error is not None:
                 return TargetDeliveryResult(
                     target_group_id=target_group_id,
@@ -297,13 +324,12 @@ class ForwardDeliveryService:
         job: ForwardJob,
         target_group_id: str,
         target_stream_id: str,
-    ) -> str | None:
+    ) -> tuple[str | None, str | None]:
         """将原始合并转发节点发送到目标聊天流。
 
-        发送时开启 Maisaka 历史同步，使 Host 在目标群 runtime 已存在时把
-        带目标平台消息 ID 的真实发送消息写入历史，供 Planner 的 ``reply``
-        工具定位。插件不再重复注入源群展开内容；只有 capability 成功后才
-        持久化 ``SENT`` 阶段。
+        发送时请求 Host 返回平台最终目标消息 ID，并开启 Maisaka 历史同步。
+        新版 Host 返回的 ID 会和 ``SENT`` 阶段原子持久化；旧版 Host 仍可按
+        布尔结果完成发送，但不会产生回复锚点。插件不重复注入源群展开内容。
 
         Args:
             job: 提供发送节点、任务 ID 和来源元数据的任务快照。
@@ -311,8 +337,9 @@ class ForwardDeliveryService:
             target_stream_id: 已解析的目标 MaiBot 聊天流 ID。
 
         Returns:
-            发送并记录阶段成功时返回 ``None``；capability 返回失败时记录
-            警告并返回当前兼容解析器生成的错误文本。
+            二元组第一项为失败原因，第二项为平台最终目标消息 ID。发送成功
+            时第一项为 ``None``；旧 Host 成功但未返回 ID 时第二项为
+            ``None``。
         """
 
         result = await self._ctx.send.forward(
@@ -322,6 +349,7 @@ class ForwardDeliveryService:
             storage_message=True,
             sync_to_maisaka_history=True,
             maisaka_source_kind=f"cross_group_forward:{job.job_id}",
+            return_details=True,
         )
         if not CapabilityResult.succeeded(result):
             error = CapabilityResult.error(result)
@@ -331,47 +359,61 @@ class ForwardDeliveryService:
                 target_group_id,
                 error,
             )
-            return error
-        await self._state.advance_target(job, target_group_id, TargetStage.SENT)
-        return None
+            return error, None
+        target_message_id = CapabilityResult.message_id(result)
+        await self._state.record_target_sent(job, target_group_id, target_message_id)
+        return None, target_message_id
 
     async def _trigger_planner(
         self,
         job: ForwardJob,
         target_group_id: str,
         target_stream_id: str,
+        target_message_id: str | None,
     ) -> str | None:
         """强制触发目标群 Planner 自主决定评论或沉默。
 
-        意图要求 Planner 结合本群语境自主判断，而非机械复述。若决定评论，
-        只允许选择目标群上下文中刚刚真实发送的合并转发消息作为 ``reply``
-        目标；无法可靠定位该消息时应保持沉默。主动任务不暴露源群消息 ID，
-        避免跨聊天流误用。capability 失败只记录警告；成功后推进到
-        ``PLANNER_QUEUED``，并将失败原因交给任务聚合报告。
+        意图要求 Planner 结合本群语境自主判断，而非机械复述。新版 Host
+        返回目标消息 ID 时，插件把该 ID 作为唯一 ``reply`` 锚点；旧 Host
+        没有返回 ID 时保留按真实历史定位并在不确定时沉默的兼容语义。主动
+        任务不暴露 source 消息 ID，避免跨聊天流误用。
 
         Args:
             job: 提供分享理由和任务 ID 的任务快照。
             target_group_id: 用于日志和阶段状态的目标 QQ 群号。
             target_stream_id: 要触发主动任务的目标聊天流 ID。
+            target_message_id: 平台最终目标消息 ID；旧 Host 未提供时为
+                ``None``。
 
         Returns:
             Planner 入队并记录阶段成功时返回 ``None``；capability 失败时
             返回当前兼容解析器生成的错误文本。
         """
 
+        if target_message_id:
+            reply_instruction = (
+                f"这则真实消息的目标消息 ID 是 {target_message_id}；如果决定发表看法，调用 reply 时只能使用这个 ID。"
+            )
+        else:
+            reply_instruction = (
+                "如果当前上下文中能可靠定位由你刚刚实际发送的那则合并转发消息，并且你决定发表看法，"
+                "调用 reply 时只能选择该真实消息；不要使用源群消息 ID。无法可靠定位时请保持沉默。"
+            )
         intent = (
             "你刚刚把一则来自其他群聊的合并转发分享到了本群。"
             "请结合本群近期聊天、群友关系、记忆和你的表达习惯，自主决定是否发表一句自然的整体看法；"
-            "如果当前上下文中能可靠定位由你刚刚实际发送的那则合并转发消息，并且你决定发表看法，"
-            "调用 reply 时只能选择该真实消息；不要使用源群消息 ID。无法可靠定位时请保持沉默。"
+            f"{reply_instruction}"
             "如果没有合适或有价值的话可说，就保持沉默。不要机械复述消息，也不要暴露插件内部流程。"
         )
+        metadata = {"job_id": job.job_id}
+        if target_message_id:
+            metadata["target_message_id"] = target_message_id
         result = await self._ctx.maisaka.proactive.trigger(
             target_stream_id,
             intent=intent,
             reason=job.sharing_reason or "源群 Planner 判断这则内容值得分享",
             priority="normal",
-            metadata={"job_id": job.job_id},
+            metadata=metadata,
         )
         if not CapabilityResult.succeeded(result):
             error = CapabilityResult.error(result)

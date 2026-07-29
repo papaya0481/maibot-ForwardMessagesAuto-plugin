@@ -116,6 +116,27 @@ class ForwardStateStore:
             return TargetStage.PENDING
         return TargetStage.from_value(str(target_states.get(target_group_id) or "pending"))
 
+    def get_target_message_id(self, state_key: str, target_group_id: str) -> str | None:
+        """读取单个目标群已经持久化的平台最终消息 ID。
+
+        Args:
+            state_key: 转发任务的稳定幂等键。
+            target_group_id: 要查询的目标 QQ 群号。
+
+        Returns:
+            已持久化的非空目标消息 ID；旧状态或无详细发送结果时返回
+            ``None``。
+        """
+
+        job_state = self._jobs.get(state_key)
+        if not isinstance(job_state, dict):
+            return None
+        target_message_ids = job_state.get("target_message_ids")
+        if not isinstance(target_message_ids, dict):
+            return None
+        message_id = str(target_message_ids.get(target_group_id) or "").strip()
+        return message_id or None
+
     async def ensure_job(self, job: ForwardJob) -> None:
         """确保任务元数据存在，并将状态写入磁盘。
 
@@ -158,6 +179,44 @@ class ForwardStateStore:
                 job_state["updated_at"] = time.time()
                 await asyncio.to_thread(self._save_sync)
 
+    async def record_target_sent(
+        self,
+        job: ForwardJob,
+        target_group_id: str,
+        target_message_id: str | None,
+    ) -> None:
+        """原子记录目标已发送阶段及平台最终消息 ID。
+
+        新版 Host 提供目标消息 ID 时，本方法将 ID 与 ``SENT`` 阶段放在同一
+        次状态写入中；旧 Host 未提供 ID 时仍只推进阶段，避免兼容发送被
+        重复执行。
+
+        Args:
+            job: 目标所属的转发任务快照。
+            target_group_id: 已完成物理发送的目标 QQ 群号。
+            target_message_id: 平台最终目标消息 ID；旧 Host 未提供时为
+                ``None``。
+        """
+
+        normalized_message_id = str(target_message_id or "").strip()
+        async with self._lock:
+            job_state = self._jobs.setdefault(job.state_key, self._new_job_state(job))
+            self._merge_job_metadata(job_state, job)
+            target_states = job_state.setdefault("targets", {})
+            current_stage = TargetStage.from_value(str(target_states.get(target_group_id) or "pending"))
+            changed = False
+            if current_stage < TargetStage.SENT:
+                target_states[target_group_id] = TargetStage.SENT.storage_value
+                changed = True
+            if normalized_message_id:
+                target_message_ids = job_state.setdefault("target_message_ids", {})
+                if target_message_ids.get(target_group_id) != normalized_message_id:
+                    target_message_ids[target_group_id] = normalized_message_id
+                    changed = True
+            if changed:
+                job_state["updated_at"] = time.time()
+                await asyncio.to_thread(self._save_sync)
+
     @staticmethod
     def _new_job_state(job: ForwardJob) -> dict[str, Any]:
         """根据任务快照构造新的 JSON 可序列化状态。
@@ -179,6 +238,7 @@ class ForwardStateStore:
             "created_at": now,
             "updated_at": now,
             "targets": {},
+            "target_message_ids": {},
         }
 
     @staticmethod
@@ -294,6 +354,16 @@ class ForwardStateStore:
         normalized["job_id"] = state_key.rsplit(":", 1)[-1]
         normalized["target_group_ids"] = target_group_ids
         normalized["targets"] = targets
+        raw_target_message_ids = raw_job.get("target_message_ids")
+        normalized["target_message_ids"] = (
+            {
+                str(group_id): str(message_id)
+                for group_id, message_id in raw_target_message_ids.items()
+                if message_id is not None and str(message_id).strip()
+            }
+            if isinstance(raw_target_message_ids, dict)
+            else {}
+        )
         return normalized
 
     @staticmethod
@@ -316,6 +386,14 @@ class ForwardStateStore:
                 incoming_stage = TargetStage.from_value(str(stage_value))
                 if incoming_stage > current:
                     destination_targets[group_id] = incoming_stage.storage_value
+
+        destination_message_ids = destination.setdefault("target_message_ids", {})
+        incoming_message_ids = incoming.get("target_message_ids")
+        if isinstance(destination_message_ids, dict) and isinstance(incoming_message_ids, dict):
+            for group_id, message_id in incoming_message_ids.items():
+                normalized_message_id = str(message_id).strip()
+                if normalized_message_id and not str(destination_message_ids.get(group_id) or "").strip():
+                    destination_message_ids[group_id] = normalized_message_id
 
         destination_ids = destination.setdefault("target_group_ids", [])
         incoming_ids = incoming.get("target_group_ids")
@@ -366,7 +444,7 @@ class ForwardStateStore:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         temp_path = self._path.with_suffix(".tmp")
         payload = {
-            "version": 2,
+            "version": 3,
             "updated_at": time.time(),
             "jobs": self._jobs,
         }

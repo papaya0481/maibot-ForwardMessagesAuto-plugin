@@ -208,6 +208,7 @@ class FakeSendCapability:
         self.events = events
         self.failed_streams = failed_streams or set()
         self.messages_by_stream: dict[str, list[dict[str, Any]]] = {}
+        self.message_ids_by_stream: dict[str, str] = {}
 
     async def forward(
         self,
@@ -220,20 +221,22 @@ class FakeSendCapability:
         Args:
             messages: 传给 ``ctx.send.forward`` 的规范化转发节点。
             stream_id: 接收消息的目标聊天流 ID。
-            **kwargs: 发送选项；测试会断言
-                ``sync_to_maisaka_history`` 为 ``True``。
+            **kwargs: 发送选项；测试会断言历史同步和详细结果均已启用。
 
         Returns:
-            目标位于 ``failed_streams`` 时返回模拟失败字典，否则返回
-            ``{"success": True}``。
+            目标位于 ``failed_streams`` 时返回不含消息 ID 的详细失败结果；
+            否则返回带平台最终目标消息 ID 的详细成功结果。
         """
 
         assert kwargs["sync_to_maisaka_history"] is True
+        assert kwargs["return_details"] is True
         self.events.append(("send", stream_id))
         self.messages_by_stream[stream_id] = messages
         if stream_id in self.failed_streams:
-            return {"success": False, "error": "模拟发送失败"}
-        return {"success": True}
+            return {"sent": False, "message_id": None, "error": "模拟发送失败"}
+        message_id = f"sent-{stream_id}"
+        self.message_ids_by_stream[stream_id] = message_id
+        return {"sent": True, "message_id": message_id}
 
 
 class BlockingSendCapability(FakeSendCapability):
@@ -297,7 +300,7 @@ class FakeMaisakaProactiveCapability:
             包含 ``success=True``、``queued=True`` 和可预测任务 ID 的字典。
         """
 
-        assert "无法可靠定位时请保持沉默" in intent
+        assert "目标消息 ID 是" in intent or "无法可靠定位时请保持沉默" in intent
         assert "完整内容已经写入当前上下文" not in intent
         metadata = kwargs.get("metadata")
         assert isinstance(metadata, dict)

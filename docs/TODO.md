@@ -18,14 +18,14 @@
 | --- | --- | --- | --- | --- |
 | `TODO-001` | 由 Host 向 Planner Hook 暴露结构化 ToolResult 状态 | 等待上游 | MaiBot Host | 中 |
 | `TODO-002` | 将未消费的成功查看结果保留至当前决策结束 | 等待上游 | MaiBot Host | 低 |
-| `TODO-003` | 让发送能力返回平台最终目标消息 ID | 等待上游 | MaiBot Host / SDK | 高 |
+| `TODO-003` | 让发送能力返回平台最终目标消息 ID | 实现中，等待上游合并 | MaiBot Host | 高 |
 | `TODO-004` | 保留发送失败在 Host、SDK 与插件之间的结构化原因 | 等待上游 | MaiBot Host / SDK | 高 |
 
 ## 待办事项
 
 ### TODO-001：由 Host 向 Planner Hook 暴露结构化 ToolResult 状态
 
-- 状态：等待上游
+- 状态：实现中，等待上游合并
 - 依赖：MaiBot Host
 - 优先级：中
 - 临时兼容版本：插件 `0.1.9` 起
@@ -134,7 +134,7 @@ tool call 与 ToolResult；不得只注入一段声称“已经查看”的提�
 ### TODO-003：让发送能力返回平台最终目标消息 ID
 
 - 状态：等待上游
-- 依赖：MaiBot Host / maibot-plugin-sdk
+- 依赖：MaiBot Host
 - 优先级：高
 - 临时兼容版本：插件 `0.1.14` 起
 
@@ -151,7 +151,7 @@ ID。MaiBot 发送服务会先用平台成功回执更新最终 `SessionMessage.
 属于合成上下文，即使指定稳定 `message_id` 也没有 `original_message`，不能
 作为回复目标，而且会在目标 prompt 中重复占用大量 token。
 
-当前 MaiBot `main` 已支持从消息库恢复最近上下文。本插件使用
+当前 MaiBot 已支持从消息库恢复最近上下文。本插件使用
 `storage_message=True`，平台最终消息 ID 会在落库前回填；目标会话尚未创建
 Maisaka 心流实例时，后续主动任务创建实例并启动后，可以从消息库恢复这条
 真实消息。恢复得到的历史项保留 `original_message`，因此“发送时没有心流
@@ -171,45 +171,45 @@ metadata 中移除 source 消息 ID。Planner 仅被允许选择目标群上下�
 `maisaka.context.append`。在取得可靠的目标消息 ID 前，目标 Planner 只能尝试
 从当前真实历史中定位刚发送的合并转发；无法可靠定位时必须保持沉默。
 
+当前未发布版本请求 `send.forward(return_details=True)`，取得目标消息 ID
+时将它与 target 的已发送阶段一并持久化，并作为主动任务唯一的回复锚点。
+旧 Host 仍只返回布尔结果时继续使用上述保守定位规则。
+
 #### 上游实施方向
 
-1. 为发送能力提供向后兼容的详细结果接口或可选模式，至少返回
-   `success`、最终目标 `message_id`，多驱动场景还应明确主回执及其他成功
-   回执的消息 ID；不能直接破坏现有 SDK `send.* -> bool` 契约。
+1. 直接为现有 `send.forward` 增加可选参数 `return_details`，默认值为
+   `False`；默认调用继续返回 `bool`，显式传入 `return_details=True` 时返回
+   至少包含 `sent` 和最终目标 `message_id` 的结构化结果。详细结果不使用
+   顶层 `success`，避免被现有 SDK 的布尔能力兼容逻辑压缩。
 2. 详细结果必须在平台成功回执更新 `SessionMessage.message_id` 之后生成；
-   单驱动场景返回唯一目标 ID，多驱动场景应区分主回执 ID 与其他成功回执
-   ID，不能返回发送前的临时 ID。
-3. SDK 必须为详细结果保留结构化字段，不能再把它压缩成 `bool`。可以新增
-   明确的详细发送方法，或为现有方法增加显式结果模式；旧调用方式继续返回
-   布尔值。
-4. 上游能力可用后，插件应持久化每个 target 的 `target_message_id`，并仅将
-   该目标 ID 作为主动任务的回复锚点；重载恢复时不得退回 source ID。
-5. 取得可靠的 `target_message_id` 后，插件再通过
-   `maisaka.context.append` 写入轻量纯文本提示。提示只包含目标 `msg_id`、
-   原始转发节点中的前四条消息预览及剩余条数；文本段需要限制单条长度，
-   图片、语音和表情只保留类型占位，不得再次包含完整展开内容、原始
-   `forward` 段或媒体二进制数据。
-6. 主动任务应引用同一个持久化目标 ID，并明确轻量提示只是前四条预览，
-   不得声称完整内容已经由插件重复写入上下文。
-7. 发送失败不得返回虚假目标 ID；插件应保留已发送 target 的持久化阶段，
+   平台没有返回最终 ID 时使用 `None`，不能返回发送前的 `send_api_*` 临时
+   ID。
+3. 复用 SDK `SendCapability.forward(..., **kwargs)` 已有的参数透传能力和
+   “无顶层 `success` 的字典保持原样”语义，不新增 SDK 方法、不修改 SDK
+   结果归一化逻辑，也不得另建平行的转发 capability 名称。
+4. 调用方取得 `message_id` 后可把它作为后续回复、关联记录或审计的稳定锚点；
+   本插件按 target 持久化该 ID，重载恢复时不得退回 source ID。
+5. 发送失败不得返回虚假目标 ID；插件应保留已发送 target 的持久化阶段，
    避免后续触发或提示失败导致重复物理发送。
-8. 为旧 Host 保留能力探测和兼容分支，直到插件最低 Host / SDK 版本允许
+6. 为旧 Host 保留能力探测和兼容分支，直到插件最低 Host 版本允许
    移除。现有消息落库、心流实例启动恢复和真实历史构造路径应保留回归测试，
    但不再要求为了本项预先创建心流实例。
 
 #### 验收条件
 
-- `send.forward` 的详细结果调用方能够取得平台最终确认的目标消息 ID，且
-  该 ID 与 Maisaka 真实历史项完全一致；
+- `send.forward(..., return_details=True)` 能够取得平台最终确认的目标消息
+  ID，且该 ID 与 Maisaka 真实历史项完全一致；平台未返回最终 ID 时不得
+  暴露 `send_api_*` 临时 ID；
 - 现有只读取布尔结果的 `send.forward` 调用方无需修改且行为不变；
-- 插件轻量提示只包含该目标 ID、前四条有界预览和剩余条数，不重复完整展开
-  内容、原始转发段或媒体二进制数据；
+- SDK 能透传 `return_details`，并原样保留不含顶层 `success` 的详细结果，
+  无需新增 SDK 方法；
 - 目标 Planner 使用该 ID 调用 `reply` 时可以正常生成并发送回复；
 - source 与 target 消息 ID 在接口、日志和主动任务 metadata 中语义明确，
   不会跨聊天流混用；
 - 发送失败时不返回虚假目标 ID，重试也不会重复物理发送；
-- 单驱动、多驱动、目标会话已有或尚未创建 Maisaka 心流实例，以及插件重载
-  恢复路径均有 Host / SDK 级测试。
+- 插件现有转发测试覆盖详细结果、旧 Host 布尔结果和重载恢复路径；Host
+  上游后续在既有测试组织中补充 capability 契约回归，不为本项单独新建测试
+  文件。
 
 ### TODO-004：保留发送失败在 Host、SDK 与插件之间的结构化原因
 

@@ -6,6 +6,11 @@
 
 ## [Unreleased]
 
+### Changed
+
+- 请求 `send.forward` 返回平台最终目标消息 ID，将其随 target 已发送阶段
+  持久化，并作为目标 Planner 唯一的回复锚点；旧 Host 布尔结果继续兼容。
+
 ## [0.1.17] - 2026-07-28
 
 ### Changed

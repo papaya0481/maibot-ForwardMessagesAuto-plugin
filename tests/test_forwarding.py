@@ -344,11 +344,12 @@ async def test_tool_sends_targets_in_order_and_deduplicates(tmp_path: Path) -> N
     ]
     assert plugin.ctx.maisaka.proactive.metadata_by_stream["target-a"] == {
         "job_id": result["job_id"],
+        "target_message_id": "sent-target-a",
     }
     assert "source_message_id" not in plugin.ctx.maisaka.proactive.metadata_by_stream["target-a"]
     target_intent = plugin.ctx.maisaka.proactive.intents_by_stream["target-a"]
-    assert "只能选择该真实消息" in target_intent
-    assert "不要使用源群消息 ID" in target_intent
+    assert "目标消息 ID 是 sent-target-a" in target_intent
+    assert "调用 reply 时只能使用这个 ID" in target_intent
     assert "完整内容已经写入当前上下文" not in target_intent
     assert plugin.ctx.message.calls == [("forward-message", "source-stream", True)]
 
@@ -361,7 +362,72 @@ async def test_tool_sends_targets_in_order_and_deduplicates(tmp_path: Path) -> N
     assert repeated["success"] is True
     assert repeated["accepted"] is False
     assert len([event for event in plugin.ctx.events if event[0] == "send"]) == 2
-    assert (tmp_path / "forward_state.json").is_file()
+    state_payload = json.loads((tmp_path / "forward_state.json").read_text(encoding="utf-8"))
+    assert state_payload["version"] == 3
+    saved_job = next(iter(state_payload["jobs"].values()))
+    assert saved_job["target_message_ids"] == {
+        "20001": "sent-target-a",
+        "20002": "sent-target-b",
+    }
+    await plugin.on_unload()
+
+
+@pytest.mark.asyncio
+async def test_legacy_boolean_send_result_keeps_safe_reply_fallback(tmp_path: Path) -> None:
+    """验证旧 Host 的布尔发送结果仍能投递且不会生成虚假回复锚点。
+
+    发送替身模拟旧 Host 在接收 ``return_details`` 后仍只返回 ``True``。
+    期望插件继续触发 Planner，但 metadata 不包含目标消息 ID，意图要求无法
+    可靠定位时保持沉默，持久化状态也不伪造 ID。该测试防止详细结果支持
+    破坏旧 Host 兼容性。
+
+    Args:
+        tmp_path: pytest 提供的隔离状态目录，用于检查兼容状态持久化。
+    """
+
+    plugin = build_plugin(tmp_path, target_groups=["20001"])
+
+    async def legacy_forward(
+        messages: list[dict[str, object]],
+        stream_id: str,
+        **kwargs: object,
+    ) -> bool:
+        """模拟忽略详细结果参数并返回布尔值的旧 Host。
+
+        Args:
+            messages: 插件传入的原始转发节点。
+            stream_id: 接收消息的目标聊天流 ID。
+            **kwargs: 插件传入的发送选项，用于确认仍请求详细结果。
+
+        Returns:
+            始终返回 ``True``，表示旧 Host 已完成物理发送。
+        """
+
+        assert messages
+        assert kwargs["return_details"] is True
+        plugin.ctx.events.append(("send", stream_id))
+        return True
+
+    plugin.ctx.send.forward = legacy_forward
+    await plugin.on_load()
+    seed_successful_view(plugin)
+
+    result = await plugin.request_cross_group_forward(
+        "forward-message",
+        platform="qq",
+        group_id="10001",
+        stream_id="source-stream",
+    )
+
+    assert result["success"] is True
+    assert plugin.ctx.events == [("send", "target-a"), ("planner", "target-a")]
+    assert plugin.ctx.maisaka.proactive.metadata_by_stream["target-a"] == {
+        "job_id": result["job_id"],
+    }
+    assert "无法可靠定位时请保持沉默" in plugin.ctx.maisaka.proactive.intents_by_stream["target-a"]
+    state_payload = json.loads((tmp_path / "forward_state.json").read_text(encoding="utf-8"))
+    saved_job = next(iter(state_payload["jobs"].values()))
+    assert saved_job["target_message_ids"] == {}
     await plugin.on_unload()
 
 
@@ -419,9 +485,9 @@ async def test_legacy_route_jobs_migrate_and_preserve_highest_target_stage(
     """验证 v0.1.11 路由级状态会合并且不按旧时间清理。
 
     状态文件预置两个具有极早时间戳的旧任务：target-a 已完成，target-b
-    停留在旧版 ``context_appended``。加载后请求应只恢复 target-b 的
-    Planner，不向任何 target 重复物理发送。该测试防止移除合成上下文阶段
-    后丢失永久防重记录。
+    停留在旧版 ``context_appended`` 并带有目标消息 ID。加载后请求应只恢复
+    target-b 的 Planner，继续使用已持久化 ID，且不向任何 target 重复物理
+    发送。该测试防止迁移时丢失永久防重记录或回复锚点。
 
     Args:
         tmp_path: pytest 提供的临时状态目录，用于写入旧版状态文件。
@@ -450,6 +516,7 @@ async def test_legacy_route_jobs_migrate_and_preserve_highest_target_stage(
                 "created_at": 0,
                 "updated_at": 0,
                 "targets": {"20002": "context_appended"},
+                "target_message_ids": {"20002": "persisted-target-b"},
             },
         },
     }
@@ -473,10 +540,17 @@ async def test_legacy_route_jobs_migrate_and_preserve_highest_target_stage(
     assert plugin.ctx.events == [
         ("planner", "target-b"),
     ]
+    assert plugin.ctx.maisaka.proactive.metadata_by_stream["target-b"] == {
+        "job_id": result["job_id"],
+        "target_message_id": "persisted-target-b",
+    }
+    assert "目标消息 ID 是 persisted-target-b" in plugin.ctx.maisaka.proactive.intents_by_stream["target-b"]
     await plugin.on_unload()
     saved_payload = json.loads((tmp_path / "forward_state.json").read_text(encoding="utf-8"))
-    assert saved_payload["version"] == 2
+    assert saved_payload["version"] == 3
     assert len(saved_payload["jobs"]) == 1
+    saved_job = next(iter(saved_payload["jobs"].values()))
+    assert saved_job["target_message_ids"] == {"20002": "persisted-target-b"}
 
 
 @pytest.mark.asyncio
