@@ -171,9 +171,10 @@ metadata 中移除 source 消息 ID。Planner 仅被允许选择目标群上下�
 `maisaka.context.append`。在取得可靠的目标消息 ID 前，目标 Planner 只能尝试
 从当前真实历史中定位刚发送的合并转发；无法可靠定位时必须保持沉默。
 
-当前未发布版本请求 `send.forward(return_details=True)`，取得目标消息 ID
+插件 `0.1.18` 请求 `send.forward(return_details=True)`，取得目标消息 ID
 时将它与 target 的已发送阶段一并持久化，并作为主动任务唯一的回复锚点。
-旧 Host 仍只返回布尔结果时继续使用上述保守定位规则。
+完整能力依赖配套 Host 分支 `1.1.2-send-forward-result`；旧 Host 仍只返回
+布尔结果时继续使用上述保守定位规则。
 
 #### 上游实施方向
 

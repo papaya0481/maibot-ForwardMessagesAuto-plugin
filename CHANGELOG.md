@@ -6,10 +6,21 @@
 
 ## [Unreleased]
 
+## [0.1.18] - 2026-07-29
+
 ### Changed
 
 - 请求 `send.forward` 返回平台最终目标消息 ID，将其随 target 已发送阶段
   持久化，并作为目标 Planner 唯一的回复锚点；旧 Host 布尔结果继续兼容。
+- 本版本的完整目标消息 ID 能力基于配套 MaiBot Host 分支
+  `1.1.2-send-forward-result` 开发和验证。该分支从
+  `upstream/dev@078ee34d` 创建，并包含 Host commit `dfaf8e8a`；
+  在该 Host 修改合并进入上游前，本版本具有明确的分支依赖性质。
+- 未包含上述 Host 修改的 MaiBot 仍可执行实际转发，但 `send.forward` 只会
+  返回旧布尔结果。此时插件不会伪造目标消息 ID，目标 Planner 只能使用保守
+  定位和无法可靠定位时保持沉默的兼容路径。
+- maibot-plugin-sdk 已具备 `**kwargs` 参数透传和详细字典保留能力，本版本不
+  依赖 SDK 分支或 SDK 修改。
 
 ## [0.1.17] - 2026-07-28
 
@@ -209,7 +220,8 @@
 - 新增分阶段持久化状态与幂等恢复，避免后续步骤失败时重复发送。
 - 新增测试，覆盖缓存、白名单、消息节点、顺序投递、失败隔离和去重。
 
-[Unreleased]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.17...HEAD
+[Unreleased]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.18...HEAD
+[0.1.18]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.17...v0.1.18
 [0.1.17]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.16...v0.1.17
 [0.1.16]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.15...v0.1.16
 [0.1.15]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.14...v0.1.15
