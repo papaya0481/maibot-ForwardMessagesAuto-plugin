@@ -53,15 +53,18 @@ def load_model(path: str, device: str = "cpu") -> Model:
 
 完整处理由源群 Planner、插件和目标群 Planner 分工完成：
 
-1. 允许作为 source 的群收到合并转发消息后，MaiBot Planner 先调用 `view_forward_message` 查看完整内容。
-2. Planner 根据内容决定是否调用本插件提供的 `@Tool` 请求转发，并显式传入源消息 `msg_id`。
-3. 插件校验 source 群白名单、消息类型和重复任务，然后读取原始转发节点。
-4. 插件按照配置顺序，将消息依次发送到允许作为 target 的群；初版不使用 LLM 选择目标群，也不提供黑名单。
-5. 每个目标群发送成功后，插件将源群已经展开过的内容写入该目标群的 Maisaka 上下文，并强制触发目标群 Planner。
-6. 目标群 Planner 结合本群近期上下文，自主决定是否回复一句对该合并转发的整体看法；没有合适内容时应保持沉默。
+1. 允许作为 source 的群收到合并转发消息后，MaiBot Planner 可以先调用 `view_forward_message` 查看完整内容再请求转发（路径 A），也可以根据当前消息预览直接调用本插件 `@Tool`（路径 B）；两种路径都必须显式传入源消息 `msg_id`。
+2. `maisaka.planner.after_response` 的 EARLY blocking Hook 必须无 I/O 地清洗整批转发调用，只保留公开参数，并签发绑定 Host 提供的真实 Planner session 与 `msg_id` 的一次性内部凭据。模型提供的 `platform`、`group_id`、`stream_id`、`chat_id`、target 或内部凭据均不可信。
+3. 路径 A 复用当前 Planner 上下文中已经成功取得的完整 ToolResult，不重复查看。路径 B 仅在转发 Tool 单独出现时由 LATE `after_response` Hook 在发送前改写成真实 `view_forward_message`；后续 `before_request` 必须精确匹配系统调用 ID 与 `msg_id`，成功或达到既有 fallback 边界后才恢复原转发请求。
+4. 路径 B 的可重试故障和首次空内容按既有阈值续轮重新查看；参数、消息类型、终止或无法安全分类的失败由正式处理器拒绝。混合多工具批次不得插入、删除或重排，只进行清洗和凭据签发；未查看的转发调用由正式处理器拒绝。
+5. 正式 Tool handler 必须消费一次性凭据，只使用其中绑定的真实 session 解析可信平台和 source 群号，再校验 source 白名单、消息归属、消息类型和永久防重，然后读取原始转发节点。凭据缺失、未知、错配、已消费，或可信 session 无法解析时必须拒绝，不得回退信任模型上下文字段。
+6. 插件按照配置顺序，将消息依次发送到允许作为 target 的群；初版不使用 LLM 选择目标群，也不提供黑名单。每个目标群发送成功后按配置决定是否强制触发目标群 Planner，不重复注入 source 群完整内容。
+7. 目标群 Planner 只能在可靠取得目标真实消息 ID 且当前上下文足以判断时自主回复；Host 未返回最终 ID 时必须沿用无法可靠定位即保持沉默的 fallback。当前插件尚不能把 source 完整内容与目标真实消息建立结构化关联，不得宣称目标 Planner 已能准确回复。
 
 源群只能来自 source 白名单，目标群只能来自 target 白名单。一个任务只有一个 source 消息，但可以有多个 target；各 target 按配置顺序发送和触发，不并行发起投递。当前 SDK 无法等待某个目标群 Planner 完整执行结束，因此初版只保证发送和主动任务入队的顺序，不保证不同目标群的 Planner 推理严格串行。
 
-插件应优先复用源群 `view_forward_message` 已经得到的完整内容，避免在目标群重复查看或重复进行媒体分析。原始消息节点用于实际发送，展开后的完整文本用于目标群上下文和回复判断。若无法取得完整内容缓存，可以使用源 Planner 提供的摘要进行降级，但不得因此阻塞消息转发。
+路径 B 的 pending 与未消费凭据只保存在当前插件进程；精确 ToolResult 缺失、配置更新或插件卸载时必须清除，不能在未来普通轮次恢复旧请求。LATE 编排 Hook 超时或失败时，EARLY 清洗与凭据边界仍然有效，原调用只能安全降级到正式处理器拒绝并要求查看，不能直接发送。
+
+插件应优先复用 source 侧 `view_forward_message` 已经得到的完整内容，避免重复查看或重复进行媒体分析。原始消息节点用于实际发送；完整文本或 fallback 当前仅用于 source 分享资格，不写入目标群合成上下文。将完整内容与目标真实消息 ID 建立幂等关联仍依赖 MaiBot Host 上游能力；实现前不得恢复 `maisaka.context.append` 重复注入真实消息、转发节点或媒体二进制。
 
 详细的功能边界、处理流程、缓存方案、失败处理和测试要求见 [功能设计文档](docs/forward-message-design.md)。
