@@ -6,7 +6,7 @@
 安全 fallback，不是提供给 Planner 主动选择的常规流程。插件随后按照 target
 白名单顺序发送消息，并按配置触发目标群 Planner。
 
-当前版本为 `0.2.0`，仅面向 SnowLuma Adapter 下的 QQ 群聊进行验证。本版本
+当前版本为 `0.2.1`，仅面向 SnowLuma Adapter 下的 QQ 群聊进行验证。本版本
 完整的目标消息 ID 与回复锚点能力基于 MaiBot Host 分支
 `1.1.2-send-forward-result` 开发；该分支从 `upstream/dev@078ee34d` 创建，
 需包含 Host commit `dfaf8e8a`。它属于配套 Host 分支功能，尚不能

@@ -6,6 +6,26 @@
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-07-30
+
+### Changed
+
+- 恢复 Planner 可见的先查看契约：调用转发 Tool 前必须先使用
+  `view_forward_message` 查看完整内容；路径 B 仅作为模型偶然漏看时由插件
+  自动补看的 fallback，不再作为 Planner 可主动选择的常规路径。
+- 补充路径 A、路径 B 汇入同一 target 投递链后的实际上下文边界：目标群近期
+  上下文会按正常窗口参与判断，但热运行时通常只显示消息前缀和目标 ID，冷启动
+  最多显示前四个节点；source 完整 ToolResult 尚未自动关联到目标真实消息。
+- 明确 Host 不返回最终目标 `message_id` 时仍完成实际转发，但无法可靠定位时
+  目标 Planner 必须保持沉默；目标侧自行重新查看不等同于复用 source 结果。
+- 本版本没有修改配置结构、字段、默认值或语义，配置版本继续保持 `0.1.21`。
+
+### Fixed
+
+- 每个 Planner 响应轮由 EARLY Hook 撤销同 session 的旧授权并签发新凭据；
+  LATE Hook 只验证精确绑定，不再复用、重签或改绑凭据，避免历史参数重放、
+  Hook 间 session 变化或配置热更新使旧请求重新获得授权。
+
 ## [0.2.0] - 2026-07-30
 
 ### Added
@@ -296,7 +316,8 @@
 - 新增分阶段持久化状态与幂等恢复，避免后续步骤失败时重复发送。
 - 新增测试，覆盖缓存、白名单、消息节点、顺序投递、失败隔离和去重。
 
-[Unreleased]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.21...v0.2.0
 [0.1.21]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.20...v0.1.21
 [0.1.20]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.19...v0.1.20
