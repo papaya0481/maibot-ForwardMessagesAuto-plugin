@@ -16,12 +16,20 @@ from forward_messages_auto.parsing import (
 from plugin import ForwardMessagesAutoPlugin
 
 
-def build_forward_message(*, stream_id: str = "source-stream", group_id: str = "10001") -> dict[str, Any]:
+def build_forward_message(
+    *,
+    stream_id: str = "source-stream",
+    group_id: str = "10001",
+    sender_id: str = "42",
+    self_id: str = "99999",
+) -> dict[str, Any]:
     """构造包含文字、图片和二进制数据的 Host 合并转发消息。
 
     Args:
         stream_id: 消息所属的 MaiBot 聊天流 ID。
         group_id: 消息所属的 QQ 群号。
+        sender_id: 入站消息发送者 QQ 号。
+        self_id: 适配器写入路由元数据的机器人 QQ 号。
 
     Returns:
         可供 ``FakeMessageCapability`` 返回的消息字典。固定消息 ID 为
@@ -33,6 +41,18 @@ def build_forward_message(*, stream_id: str = "source-stream", group_id: str = "
         "session_id": stream_id,
         "group_id": group_id,
         "platform": "qq",
+        "message_info": {
+            "user_info": {
+                "user_id": sender_id,
+                "user_nickname": "群友甲",
+                "user_cardname": "",
+            },
+            "group_info": {
+                "group_id": group_id,
+                "group_name": "测试群",
+            },
+            "additional_config": {"self_id": self_id},
+        },
         "processed_plain_text": "合并转发预览",
         "raw_message": [
             {
@@ -132,6 +152,47 @@ class FakeStaticMessageCapability:
         assert stream_id == "source-stream"
         assert include_binary_data is True
         return self.result
+
+
+class FakeDelayedMessageCapability(FakeMessageCapability):
+    """在固定查询次数后才返回真实消息的能力替身。"""
+
+    def __init__(self, message: dict[str, Any], unavailable_attempts: int = 1) -> None:
+        """创建模拟 Hook 早于消息落库时序的查询能力。
+
+        Args:
+            message: 等待次数耗尽后返回的真实消息字典。
+            unavailable_attempts: 前多少次查询返回 ``None``，默认一次。
+        """
+
+        super().__init__(message)
+        self.unavailable_attempts = unavailable_attempts
+
+    async def get_by_id(
+        self,
+        message_id: str,
+        *,
+        stream_id: str = "",
+        include_binary_data: bool = False,
+        **kwargs: Any,
+    ) -> dict[str, Any] | None:
+        """记录查询，并在模拟落库完成后返回预设消息。
+
+        Args:
+            message_id: 被查询的 source 消息 ID。
+            stream_id: 限制消息归属的 source 聊天流 ID。
+            include_binary_data: 是否请求媒体二进制字段。
+            **kwargs: 本测试替身忽略的其他 capability 参数。
+
+        Returns:
+            前 ``unavailable_attempts`` 次返回 ``None``，之后返回预设消息。
+        """
+
+        del kwargs
+        self.calls.append((message_id, stream_id, include_binary_data))
+        if len(self.calls) <= self.unavailable_attempts:
+            return None
+        return self.message
 
 
 class FakeChatCapability:
@@ -300,10 +361,14 @@ class FakeMaisakaProactiveCapability:
             包含 ``success=True``、``queued=True`` 和可预测任务 ID 的字典。
         """
 
-        assert "目标消息 ID 是" in intent or "无法可靠定位时请保持沉默" in intent
-        assert "完整内容已经写入当前上下文" not in intent
         metadata = kwargs.get("metadata")
         assert isinstance(metadata, dict)
+        if metadata.get("trigger_kind") == "source_forward_message":
+            assert "本群刚收到一则真实合并转发消息" in intent
+            assert "不要求你一定查看、转发或回复" in intent
+        else:
+            assert "目标消息 ID 是" in intent or "无法可靠定位时请保持沉默" in intent
+            assert "完整内容已经写入当前上下文" not in intent
         self.intents_by_stream[stream_id] = intent
         self.metadata_by_stream[stream_id] = metadata
         self.events.append(("planner", stream_id))
@@ -349,6 +414,7 @@ def build_plugin(
     failed_streams: set[str] | None = None,
     target_groups: list[str] | None = None,
     view_failure_fallback_threshold: int = 2,
+    trigger_source_planner: bool = False,
 ) -> ForwardMessagesAutoPlugin:
     """构造启用状态下、带一个 source 和两个 target 的插件。
 
@@ -358,6 +424,8 @@ def build_plugin(
         target_groups: 可选的 target 群号配置；省略时使用两个默认目标群。
         view_failure_fallback_threshold: 允许摘要或预览降级前，同一消息需要
             连续累计的可重试查看故障次数。
+        trigger_source_planner: source 群收到合并转发时是否强制触发本群
+            Planner，默认关闭。
 
     Returns:
         已注入强类型配置和 ``FakeContext``、但尚未调用 ``on_load`` 的插件。
@@ -368,8 +436,8 @@ def build_plugin(
         {
             "plugin": {
                 "enabled": True,
-                "version": "0.1.17",
-                "config_version": "0.1.4",
+                "version": "0.1.21",
+                "config_version": "0.1.21",
             },
             "routing": {
                 "source_groups": ["10001"],
@@ -378,6 +446,7 @@ def build_plugin(
             "behavior": {
                 "view_failure_fallback_threshold": view_failure_fallback_threshold,
                 "trigger_target_planner": True,
+                "trigger_source_planner": trigger_source_planner,
             },
         }
     )

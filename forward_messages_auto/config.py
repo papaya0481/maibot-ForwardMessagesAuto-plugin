@@ -7,8 +7,8 @@ from typing import Any
 
 from maibot_sdk import Field, PluginConfigBase
 
-PLUGIN_VERSION = "0.1.20"
-CONFIG_VERSION = "0.1.4"
+PLUGIN_VERSION = "0.1.21"
+CONFIG_VERSION = "0.1.21"
 
 
 class GroupIdList:
@@ -87,6 +87,10 @@ class BehaviorConfig(PluginConfigBase):
     trigger_target_planner: bool = Field(
         default=True,
         description="发送成功后是否触发目标群 Planner 自主决定是否评论",
+    )
+    trigger_source_planner: bool = Field(
+        default=False,
+        description="source 白名单群收到合并转发时是否强制触发本群 Planner",
     )
 
 

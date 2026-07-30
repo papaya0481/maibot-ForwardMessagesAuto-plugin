@@ -167,6 +167,38 @@ class ForwardMessagesAutoPlugin(MaiBotPlugin):
         self._warn_for_version_mismatch()
         self.ctx.logger.info("自主跨群转发配置已更新: scope=%s version=%s", scope, version)
 
+    @HookHandler(
+        "chat.receive.after_process",
+        name="trigger_source_planner_for_forward_message",
+        description="source 白名单群收到合并转发消息时按配置强制触发本群 Planner。",
+        mode=HookMode.OBSERVE,
+        order=HookOrder.LATE,
+        timeout_ms=3000,
+        error_policy=ErrorPolicy.SKIP,
+    )
+    async def trigger_source_planner_for_forward_message(
+        self,
+        message: Any = None,
+        **kwargs: Any,
+    ) -> None:
+        """观察入站合并转发并异步安排一次 source Planner 触发。
+
+        Hook 只把消息交给运行时筛选和排队，不修改入站消息，也不等待真实
+        消息落库或 Planner 入队，因此不会阻塞 Host 消息主链。是否查看、
+        转发或回复仍完全由后续 Planner 自主决定。
+
+        Args:
+            message: ``chat.receive.after_process`` 提供的序列化
+                ``SessionMessage``；缺失或格式异常时忽略。
+            **kwargs: Hook 未来可能增加的其他参数，本处理器不读取。
+
+        Raises:
+            RuntimeError: Hook 在 ``on_load`` 初始化运行时前被调用。
+        """
+
+        del kwargs
+        self.runtime.observe_source_message(message)
+
     def _warn_for_version_mismatch(self) -> None:
         """检查配置声明的版本字段并记录不一致警告。
 

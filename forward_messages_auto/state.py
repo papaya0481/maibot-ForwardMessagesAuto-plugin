@@ -137,6 +137,35 @@ class ForwardStateStore:
         message_id = str(target_message_ids.get(target_group_id) or "").strip()
         return message_id or None
 
+    def is_forwarded_target_message(self, target_group_id: str, message_id: str) -> bool:
+        """判断一条入站消息是否是插件此前发送到该 target 的真实消息。
+
+        该查询使用已经持久化的平台最终目标消息 ID，可在适配器未提供
+        ``self_id`` 标记时继续拦截已知的机器人转发回声。旧 Host 未返回
+        最终 ID 时无法命中，本方法不会根据内容或 source 消息 ID 猜测。
+
+        Args:
+            target_group_id: 当前入站消息所在的 QQ 群号。
+            message_id: 当前入站消息的平台最终消息 ID。
+
+        Returns:
+            任一历史任务在该 target 群保存了相同消息 ID 时返回 ``True``；
+            参数为空或没有匹配记录时返回 ``False``。
+        """
+
+        normalized_group_id = str(target_group_id or "").strip()
+        normalized_message_id = str(message_id or "").strip()
+        if not normalized_group_id or not normalized_message_id:
+            return False
+        for job_state in self._jobs.values():
+            target_message_ids = job_state.get("target_message_ids")
+            if not isinstance(target_message_ids, dict):
+                continue
+            stored_message_id = str(target_message_ids.get(normalized_group_id) or "").strip()
+            if stored_message_id == normalized_message_id:
+                return True
+        return False
+
     async def ensure_job(self, job: ForwardJob) -> None:
         """确保任务元数据存在，并将状态写入磁盘。
 

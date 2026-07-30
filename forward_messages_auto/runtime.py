@@ -11,6 +11,7 @@ from .parsing import PlannerHistoryParser
 from .request import ForwardRequestService
 from .state import ForwardStateStore
 from .streams import GroupStreamRegistry
+from .source_trigger import SourcePlannerTriggerService
 from .view_context import ViewEligibilityStore
 
 FORWARD_TOOL_NAME = "request_cross_group_forward"
@@ -43,6 +44,11 @@ class ForwardingRuntime:
         self.state = ForwardStateStore(
             context.paths.data_dir / "forward_state.json",
             context.logger,
+        )
+        self.source_trigger = SourcePlannerTriggerService(
+            context,
+            config_provider,
+            self.state,
         )
         self.delivery = ForwardDeliveryService(
             context,
@@ -78,7 +84,7 @@ class ForwardingRuntime:
             投递服务维护的 ``asyncio.Task`` 集合。
         """
 
-        return self.delivery.background_tasks
+        return self.delivery.background_tasks | self.source_trigger.background_tasks
 
     def source_groups(self) -> list[str]:
         """返回规范化后的 source QQ 群白名单。
@@ -109,6 +115,7 @@ class ForwardingRuntime:
 
         self.delivery.resume()
         await self.state.load()
+        await self.source_trigger.start()
 
     async def stop(self) -> None:
         """停止后台投递并保存最终状态。
@@ -117,8 +124,22 @@ class ForwardingRuntime:
         遗留任务继续调用 Host capability。
         """
 
+        await self.source_trigger.stop()
         await self.delivery.stop()
         await self.state.save()
+
+    def observe_source_message(self, message: Any) -> bool:
+        """把一条入站 Hook 消息交给 source Planner 触发服务筛选。
+
+        Args:
+            message: ``chat.receive.after_process`` 提供的序列化消息载荷。
+
+        Returns:
+            消息满足当前配置并新建后台触发任务时返回 ``True``；否则返回
+            ``False``。
+        """
+
+        return self.source_trigger.observe(message)
 
     def capture_view_results(self, session_id: str, messages: Any) -> list[str]:
         """按 Planner 当前历史同步查看资格并登记新的成功结果。

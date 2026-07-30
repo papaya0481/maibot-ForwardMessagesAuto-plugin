@@ -6,6 +6,21 @@
 
 ## [Unreleased]
 
+## [0.1.21] - 2026-07-30
+
+### Added
+
+- 新增独立且默认关闭的 `behavior.trigger_source_planner` 配置。启用后，source
+  白名单群收到真实合并转发时，会在消息就绪后强制触发一次本群 Planner；
+  不会自动查看、转发或回复。
+- 新增 source 触发永久防重状态，并结合适配器账号来源标记与已持久化的目标
+  消息 ID 排除机器人自己的转发回声。
+
+### Changed
+
+- 配置版本随本次字段变更从 `0.1.4` 直接同步到项目版本 `0.1.21`；后续只有
+  再次修改配置结构、字段、默认值或语义时才同步到当时的项目版本。
+
 ## [0.1.20] - 2026-07-30
 
 ### Added
@@ -250,7 +265,8 @@
 - 新增分阶段持久化状态与幂等恢复，避免后续步骤失败时重复发送。
 - 新增测试，覆盖缓存、白名单、消息节点、顺序投递、失败隔离和去重。
 
-[Unreleased]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.20...HEAD
+[Unreleased]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.21...HEAD
+[0.1.21]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.20...v0.1.21
 [0.1.20]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.19...v0.1.20
 [0.1.19]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.18...v0.1.19
 [0.1.18]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.17...v0.1.18

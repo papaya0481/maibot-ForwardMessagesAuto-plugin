@@ -2,7 +2,7 @@
 
 让 MaiBot 在 source 白名单群聊中看完一则合并转发消息后，自主判断是否值得分享。插件按照 target 白名单顺序发送消息，并在每个目标群中触发 Planner，自主决定是否补充一句看法。
 
-当前版本为 `0.1.20`，仅面向 SnowLuma Adapter 下的 QQ 群聊进行验证。本版本
+当前版本为 `0.1.21`，仅面向 SnowLuma Adapter 下的 QQ 群聊进行验证。本版本
 完整的目标消息 ID 与回复锚点能力基于 MaiBot Host 分支
 `1.1.2-send-forward-result` 开发；该分支从 `upstream/dev@078ee34d` 创建，
 需包含 Host commit `dfaf8e8a`。它属于配套 Host 分支功能，尚不能
@@ -30,9 +30,13 @@ target_groups = ["234567890", "345678901"]
 
 [behavior]
 view_failure_fallback_threshold = 2
+trigger_source_planner = false
 trigger_target_planner = true
 ```
 source 和 target 均只填写 QQ 群号字符串。`target_groups` 的列表顺序就是每次任务的发送顺序。未列入白名单的群不能触发或接收自主转发。
+`trigger_source_planner` 是独立的 source 方向开关，默认关闭。启用后，source
+白名单群收到真实合并转发时，插件会绕过普通回复频率抽样，强制触发一次本群
+Planner；它只保证主动任务入队，不要求 Planner 一定查看、转发或回复。
 `view_failure_fallback_threshold` 表示允许使用摘要或预览降级前，
 `view_forward_message` 对同一 source stream 与 `msg_id` 必须连续发生的
 可重试故障次数，最小值为 `1`，默认值为 `2`。可重试故障包括展开异常、
@@ -47,15 +51,24 @@ source 和 target 均只填写 QQ 群号字符串。`target_groups` 的列表顺
 
 ## 工作流程
 
-1. source 群 Planner 调用内置 `view_forward_message` 查看当前聊天流中的一则合并转发；其内部节点可以最初来自其他群。
-2. Planner 认为内容值得分享时，通过 `tool_search` 发现并调用 deferred Tool `request_cross_group_forward`。
-3. 插件按 `msg_id + source stream` 读取原始合并转发节点，按 target 白名单
+1. source 白名单群收到合并转发；启用 `trigger_source_planner` 时，插件先
+   确认真实消息已经进入 Host 消息库，再强制触发一次本群 Planner。
+2. source 群 Planner 自主决定是否调用内置 `view_forward_message` 查看当前
+   聊天流中的这则合并转发；其内部节点可以最初来自其他群。
+3. Planner 认为内容值得分享时，通过 `tool_search` 发现并调用 deferred Tool `request_cross_group_forward`。
+4. 插件按 `msg_id + source stream` 读取原始合并转发节点，按 target 白名单
    顺序执行投递，并等待全部目标产生真实结果后再向源群 Planner 返回。
-4. 每个 target 发送时请求 Host 将带目标群消息 ID 的真实发送消息同步到
-   Maisaka 历史；发送成功后，插件再显式写入已经展开的完整内容。
-5. 启用 `trigger_target_planner` 时，插件强制触发目标群 Planner；Planner
+5. 每个 target 发送时请求 Host 将带目标群消息 ID 的真实发送消息同步到
+   Maisaka 历史，不重复注入 source 群已经展开的完整内容。
+6. 启用 `trigger_target_planner` 时，插件强制触发目标群 Planner；Planner
    自主决定回复刚发送的合并转发或保持沉默。主动任务不会把源群消息 ID
    暴露为回复目标。
+
+source 触发通过 `chat.receive.after_process` Hook 在普通回复频率判断前识别
+QQ 合并转发，再等待同一 `source stream + msg_id` 可查询后调用
+`maisaka.proactive.trigger`。适配器提供的 `self_id`/账号标记与已持久化的目标
+消息 ID 会共同排除机器人自己的转发回声；成功入队的 source 消息键永久保存
+在插件数据目录中，插件重载不会重复触发。
 
 转发 Tool 默认位于 MaiBot 的 deferred tools 池中。各群 Planner 会看到其简要说明，但只有通过 `tool_search` 发现后才能取得完整参数并调用。处理器会实时校验 QQ 平台、当前调用群的 source 白名单权限，以及消息是否属于当前 source stream；因此 deferred discovery 不是授权边界，非 source 群即使尝试调用也会被拒绝。Source 表示读取并发起分享的群聊，不要求合并转发内容最初由该群产生。Planner 不能通过 Tool 参数指定目标群。
 
@@ -113,6 +126,8 @@ RUFF_CACHE_DIR=/tmp/maibot-forward-ruff ../../.venv/bin/python -m ruff format --
 人工联调应至少准备一个 source 群和两个 target 群，并验证：
 
 - source Planner 先查看完整内容，再决定是否调用转发 Tool；
+- 启用 `trigger_source_planner` 后，低回复频率下的 source 合并转发仍会触发
+  Planner，但不会自动查看、转发或回复；
 - target 按配置顺序收到合并转发；
 - 目标群 Planner 可以选择评论或沉默；
 - 非白名单群无法调用或接收；

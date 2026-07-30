@@ -17,9 +17,11 @@
 
 ### 2.1 当前流程
 
-1. Source 白名单群收到一条合并转发消息。
-2. Source Planner 调用 `view_forward_message(msg_id)` 查看完整内容。
-3. Planner 认为内容有意思、符合人设并值得分享时，调用 deferred Tool
+1. Source 白名单群收到一条合并转发消息；启用
+   `trigger_source_planner` 时，插件强制触发一次 source Planner。
+2. Source Planner 自主决定是否调用 `view_forward_message(msg_id)` 查看完整
+   内容；没有合适行动时可以保持沉默。
+3. Planner 查看后认为内容有意思、符合人设并值得分享时，调用 deferred Tool
    `request_cross_group_forward`，显式传入源消息 `msg_id`。
 4. 插件校验 QQ 群聊环境、source 白名单、消息归属和消息类型，从源消息读取
    原始转发节点。
@@ -32,7 +34,25 @@
 一个任务只对应一个 source 聊天流和一条 source 消息，但可以有多个 target。
 Source 表示发起分享的群，不要求合并转发中的内容最初产生于该群。
 
-### 2.2 查看资格与降级
+### 2.2 Source Planner 强制触发
+
+`behavior.trigger_source_planner` 是独立且默认关闭的 source 方向开关。启用
+后，插件通过 `chat.receive.after_process` Hook 在普通回复频率判断前识别 QQ
+群聊中的合并转发；仅当群号位于当前 source 白名单时，才异步等待同一
+`source stream + msg_id` 可由消息能力查询，然后调用
+`maisaka.proactive.trigger` 强制触发该聊天流的 Planner。
+
+这项能力只保证主动任务成功入队，不会自动调用 `view_forward_message`，也不
+代表一定转发或回复。Planner 仍结合本群上下文和人设自主决定后续行为。Hook
+采用观察模式，不改写消息，也不等待落库或入队，避免阻塞入站主链。
+
+插件使用两层回声保护：优先比较入站发送者与适配器提供的 `self_id`、平台
+账号标记；标记缺失时，再比较既有转发状态中保存的 target 最终消息 ID。
+成功入队的消息按 `source stream + msg_id` 生成匿名稳定键，永久保存在插件
+数据目录的 `source_planner_trigger_state.json`；重复 Hook、热重载和进程重启
+都不会再次触发同一 source 消息。
+
+### 2.3 查看资格与降级
 
 当前 `request_cross_group_forward` 要求 Planner 先成功调用
 `view_forward_message`。插件通过 Planner Hook 读取当前上下文中的工具调用和
@@ -50,7 +70,7 @@ Source 表示发起分享的群，不要求合并转发中的内容最初产生�
 调用获得降级资格。当前 Host 尚未向 Planner Hook 提供结构化 ToolResult
 状态，插件暂时兼容已知失败文案；上游改进见 [TODO-001](TODO.md#todo-001由-host-向-planner-hook-暴露结构化-toolresult-状态)。
 
-### 2.3 顺序投递与恢复
+### 2.4 顺序投递与恢复
 
 每个 target 独立推进以下阶段：
 
@@ -68,7 +88,7 @@ pending -> sent -> planner_queued
 投递任务会在 Tool RPC 内等待全部 target 的真实结果，并屏蔽调用方取消，避免
 Planner 中断或 RPC 超时连带取消已经开始的发送。
 
-### 2.4 目标群上下文与 Planner
+### 2.5 目标群上下文与 Planner
 
 发送时开启 Maisaka 历史同步。已启动的目标群运行时会直接取得真实发送消息；
 冷启动运行时可从消息库恢复最近消息。插件不再使用
@@ -83,7 +103,7 @@ Planner 中断或 RPC 超时连带取消已经开始的发送。
 当前只保证“发送”和“主动任务入队”按 target 配置顺序发生。SDK 不能等待
 目标 Planner 完整执行结束，因此不同目标群的 Planner 可能并发推理。
 
-### 2.5 当前配置
+### 2.6 当前配置
 
 ```toml
 [routing]
@@ -92,32 +112,21 @@ target_groups = ["234567890", "345678901"]
 
 [behavior]
 view_failure_fallback_threshold = 2
+trigger_source_planner = false
 trigger_target_planner = true
 ```
 
 - 群号使用字符串；`target_groups` 的顺序就是投递顺序。
+- `trigger_source_planner` 只控制收到合并转发后是否强制触发 source Planner，
+  默认关闭；不自动查看、转发或回复。
 - `trigger_target_planner` 只控制发送成功后是否主动触发目标群 Planner。
 - 配置支持热更新；非法 TOML 不会覆盖最近一次有效配置。
-- 插件版本和配置版本独立维护。只有配置结构、字段、默认值或语义变化时才
-  修改配置版本。
+- 插件版本和配置版本独立维护。只有配置发生变化时才修改配置版本，并直接
+  同步到承载该变更的项目版本号；后续没有配置变化的版本继续沿用该值。
 
 ## 3. 未来展望（尚未实现）
 
-### 3.1 合并转发消息强制触发 source Planner
-
-MaiBot 回复频率不为 `1` 时，普通消息可能不会进入 Planner，合并转发也可能
-因此被跳过。未来可增加独立行为配置：source 白名单群收到合并转发时，绕过
-普通回复频率抽样，强制触发一次 source Planner，让它至少有机会查看并判断
-是否分享。
-
-这项能力只保证 Planner 被触发，不代表一定查看、转发或回复。它与当前已有的
-`trigger_target_planner` 是两个方向不同的开关：前者作用于收到消息的 source
-群，后者作用于发送成功后的 target 群。
-
-实现前需要确认插件或 Host 是否能在回复频率判断之前可靠识别消息类型并触发
-同一聊天流，且必须通过来源标记和永久防重避免机器人自己的转发回声形成循环。
-
-### 3.2 支持“先查看”和“直接请求”两条路径
+### 3.1 支持“先查看”和“直接请求”两条路径
 
 未来不再强制要求调用 `request_cross_group_forward` 之前一定先调用
 `view_forward_message`，而是支持两条明确路径：
@@ -182,12 +191,12 @@ ID；不得重复写入真实消息历史、转发节点或媒体二进制。
 保持未实现，不应退回让 agent 自己猜测是否再次调用
 `view_forward_message`。
 
-### 3.3 支持更多消息类型
+### 3.2 支持更多消息类型
 
 未来支持转发合并转发以外的更多消息类型。具体类型、权限边界、上下文表示和
 降级方式留到实施前再设计，当前不展开，也不改变现有合并转发校验。
 
-### 3.4 可选的调试统计
+### 3.3 可选的调试统计
 
 未来可增加一个仅供开发调试的统计开关，用来观察当前插件版本对合并转发的
 实际触发情况。该开关默认关闭；优先不写入普通用户生成的配置文件。若 SDK
@@ -254,7 +263,6 @@ ID；不得重复写入真实消息历史、转发节点或媒体二进制。
 
 未来功能落地时还需增加：
 
-- 回复频率不为 `1` 时，合并转发仍能按配置触发 source Planner；
 - 已查看路径不会重复展开，未查看路径会在发送后系统展开并只注入一次；
 - 自动展开或注入失败后重试不会重复物理发送；
 - 调试统计默认关闭、按唯一消息去重、按插件版本分桶，并且统计失败不影响
