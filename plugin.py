@@ -17,6 +17,7 @@ if __package__:
         ForwardingRuntime,
     )
     from .forward_messages_auto.config_recovery import LastKnownGoodConfig
+    from .forward_messages_auto.invocation_gate import FORWARD_AUTHORIZATION_ROUND_KWARG
     from .forward_messages_auto.runtime import FORWARD_TOOL_NAME
 else:
     from forward_messages_auto import (
@@ -26,6 +27,7 @@ else:
         ForwardingRuntime,
     )
     from forward_messages_auto.config_recovery import LastKnownGoodConfig
+    from forward_messages_auto.invocation_gate import FORWARD_AUTHORIZATION_ROUND_KWARG
     from forward_messages_auto.runtime import FORWARD_TOOL_NAME
 
 
@@ -273,29 +275,35 @@ class ForwardMessagesAutoPlugin(MaiBotPlugin):
     async def authorize_forward_request_context(self, **kwargs: Any) -> dict[str, Any]:
         """在任何异步预检前清洗参数并签发一次性会话凭据。
 
-        方法不调用 Host capability。每个 Planner 响应轮先撤销同一 session
-        尚未消费的旧凭据，再为本轮调用签发新凭据。即使后续自动查看 Hook
-        超时或失败，本次修改仍由 Host Hook 链保留；如果本 Hook 自身未执行
-        成功，正式 Tool handler 会因缺少一次性凭据而拒绝原始模型调用，
-        不会信任模型提供的 ``platform``、``group_id`` 或 ``stream_id``。
+        方法不调用 Host capability。每个转发调用若携带历史内部凭据，只撤销
+        该凭据并为本次调用签发新凭据，不影响同 session 的其他并发调用。
+        方法同时生成只沿当前 Hook 链传递的随机轮次标记。即使后续自动查看
+        Hook 超时或失败，本次修改仍由 Host Hook 链保留；如果本 Hook 自身
+        未执行成功，LATE 与正式 Tool handler 会因缺少可信凭据而拒绝原始
+        模型调用，不会信任模型提供的 ``platform``、``group_id`` 或
+        ``stream_id``。
 
         Args:
             **kwargs: ``maisaka.planner.after_response`` Hook 参数。读取真实
-                ``session_id`` 和序列化 ``tool_calls``，保留其他响应字段。
+                ``session_id`` 和序列化 ``tool_calls``，保留其他响应字段并
+                写入只供同一 Hook 链 LATE 阶段使用的本轮随机标记。
 
         Returns:
             阻塞 Hook 的继续结果，其中转发调用只保留公开参数并附带内部
-            一次性凭据；其他工具调用与响应字段保持不变。
+            一次性凭据，同时包含本轮随机标记；其他工具调用与响应字段
+            保持不变。
 
         Raises:
             RuntimeError: Hook 在 ``on_load`` 初始化运行时前被调用。
         """
 
         session_id = str(kwargs.get("session_id") or "").strip()
-        kwargs["tool_calls"] = self.runtime.authorize_forward_calls(
+        tool_calls, authorization_round = self.runtime.authorize_forward_calls(
             session_id,
             kwargs.get("tool_calls"),
         )
+        kwargs["tool_calls"] = tool_calls
+        kwargs[FORWARD_AUTHORIZATION_ROUND_KWARG] = authorization_round
         return {"action": "continue", "modified_kwargs": kwargs}
 
     @HookHandler(
@@ -313,14 +321,14 @@ class ForwardMessagesAutoPlugin(MaiBotPlugin):
         对单独出现的直接转发请求，当前上下文没有成功查看或允许降级资格时，
         方法将其替换成真实 ``view_forward_message``。下一 Planner 续轮捕获
         精确结果后，再恢复最初的转发参数；同一批不会同时查看和发送。路径 A
-        的调用保持原样。此 Hook 只验证 EARLY 已签发的凭据，绝不重新签发或
-        改绑。被新消息中断的 Planner 请求不会触发本 Hook，因此尚未消费的
-        普通查看判断提醒会继续保留。
+        的调用保持原样。此 Hook 只验证 EARLY 本轮标记及其签发的凭据，绝不
+        重新签发或改绑。被新消息中断的 Planner 请求不会触发本 Hook，因此
+        尚未消费的普通查看判断提醒会继续保留。
 
         Args:
             **kwargs: ``maisaka.planner.after_response`` Hook 参数。读取
-                ``session_id``、``response`` 和 ``tool_calls``，并保留其他
-                统计及选择字段。
+                ``session_id``、``response``、``tool_calls`` 和 EARLY 本轮
+                标记；消费标记后保留其他统计及选择字段。
 
         Returns:
             阻塞 Hook 的继续结果。未接管时响应保持原样；路径 B 会在
@@ -331,11 +339,13 @@ class ForwardMessagesAutoPlugin(MaiBotPlugin):
         """
 
         session_id = str(kwargs.get("session_id") or "").strip()
+        authorization_round = str(kwargs.pop(FORWARD_AUTHORIZATION_ROUND_KWARG, "") or "").strip()
         if session_id:
             response, tool_calls = await self.runtime.transform_after_response(
                 session_id,
                 kwargs.get("response"),
                 kwargs.get("tool_calls"),
+                authorization_round,
             )
             kwargs["response"] = response
             kwargs["tool_calls"] = tool_calls

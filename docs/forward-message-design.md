@@ -111,16 +111,17 @@ session 最多保存一条尚未发送的路径 B pending，且该状态仅存�
 
 1. EARLY blocking Hook 不执行 capability I/O。它遍历整批调用，删除
    `platform`、`group_id`、`stream_id`、`chat_id`、target 等所有未声明字段，
-   只保留 `msg_id`、`sharing_reason` 和 `content_summary`；每个新响应轮先撤销
-   同一 session 尚未消费的旧凭据，再签发不可预测的一次性内部凭据。
+   只保留 `msg_id`、`sharing_reason` 和 `content_summary`。调用若携带历史内部
+   凭据，只撤销该凭据并换发新值；同 session 其他并发调用的授权保持有效。
+   EARLY 还会生成只沿当前 Hook 分发链传递、不进入 Tool 参数的随机轮次标记。
 2. 凭据绑定 EARLY Hook 提供的真实 Planner session 与规范化 `msg_id`，不能
    由模型指定、跨 session 复用、改绑消息或重复消费。
 3. 正式 Tool handler 忽略模型可写的上下文字段；只有成功消费凭据后，才使用
    凭据中的真实 session 通过 Host 的可信会话映射解析平台和 source 群号。
 4. 凭据缺失、未知、错配或已消费时立即拒绝，不读取源消息、不创建投递任务。
-5. LATE 编排 Hook 只验证 EARLY 凭据与当前 session、`msg_id` 的精确绑定，绝不
-   签发或改绑；两个 Hook 之间若 session 被改写或配置更新清空授权，调用会失去
-   凭据并由正式处理器拒绝。
+5. LATE 编排 Hook 只验证 EARLY 凭据与本轮标记、当前 session、`msg_id` 的精确
+   绑定，绝不签发或改绑；两个 Hook 之间若轮次标记丢失、session 被改写或配置
+   更新清空授权，调用会失去凭据并由正式处理器拒绝。
 6. LATE 可以执行消息预检和路径 B 改写。它若超时或失败，Host 仍只会把 EARLY
    已清洗并带有效凭据的原调用交给正式处理器；处理器因没有查看资格而拒绝并
    要求查看，不会安全降级成“直接发送”。
@@ -281,8 +282,10 @@ trigger_target_planner = true
 ## 4. 安全与实现约束
 
 - EARLY Hook 必须无 I/O 地清洗全部转发调用，并以 Host 提供的真实 Planner
-  session 和 `msg_id` 每轮签发新的一次性凭据；LATE 只能验证，不能签发或改绑，
-  编排失败不能撤销该安全边界。
+  session 和 `msg_id` 为每个调用签发新的一次性凭据；输入中的旧凭据只针对该
+  调用撤销，不能误伤同 session 的其他并发调用。EARLY 本轮标记只能沿当前
+  Hook 分发链传递；LATE 只能验证标记和绑定，不能签发或改绑，编排失败不能
+  撤销该安全边界。
 - Tool 处理器必须消费一次性凭据，以其绑定的 session 解析可信 source 群号，
   再实时校验 QQ 平台、source 白名单、当前聊天流和消息归属；模型参数和
   deferred discovery 都不是授权边界。
@@ -306,8 +309,9 @@ trigger_target_planner = true
 - 路径 B 在发送前生成真实查看调用，按精确调用 ID 捕获结果，在成功或既有
   fallback 边界后恢复原请求；
 - 可重试故障和空内容按既有阈值续轮查看，不可降级失败由正式处理器拒绝；
-- EARLY 清洗和逐轮换新、LATE 不改绑、一次性凭据消费、真实 session 到 source
-  群的可信解析，以及 LATE Hook 超时后的安全拒绝；
+- EARLY 清洗和调用级换新、同 session 并发隔离、本轮标记校验、LATE 不改绑、
+  一次性凭据消费、真实 session 到 source 群的可信解析，以及 LATE Hook 超时
+  后的安全拒绝；
 - 混合多工具批次不重排，pending 在结果缺失、配置更新和卸载时释放；
 - 白名单与消息归属、消息类型、多 target 顺序、永久防重、阶段恢复、真实发送
   结果、目标消息 ID 兼容和单 target 失败后继续。

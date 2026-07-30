@@ -8,7 +8,10 @@ from typing import Any
 
 import pytest
 
-from forward_messages_auto.invocation_gate import FORWARD_CONTEXT_TOKEN_ARGUMENT
+from forward_messages_auto.invocation_gate import (
+    FORWARD_AUTHORIZATION_ROUND_KWARG,
+    FORWARD_CONTEXT_TOKEN_ARGUMENT,
+)
 from forward_messages_auto.parsing import VIEW_FORWARD_TOOL_NAME
 from forward_messages_auto.view_before_forward import FORWARD_TOOL_NAME
 from tests.support import (
@@ -158,6 +161,7 @@ async def test_unviewed_direct_request_is_replaced_by_single_real_view(tmp_path:
     modified = result["modified_kwargs"]
     assert modified["response"] == "转发前先查看这则合并转发的完整内容。"
     assert modified["prompt_tokens"] == 17
+    assert FORWARD_AUTHORIZATION_ROUND_KWARG not in modified
     assert len(modified["tool_calls"]) == 1
     view_call = modified["tool_calls"][0]
     assert view_call["id"].startswith("cross-forward-auto-view-")
@@ -204,7 +208,8 @@ async def test_successful_auto_view_restores_original_request_and_sends(tmp_path
     )
     assert before["modified_kwargs"]["messages"] == messages
 
-    resumed = await plugin.orchestrate_view_before_forward(
+    resumed = await run_after_response_hooks(
+        plugin,
         session_id="source-stream",
         response="模型桥接轮输出不会成为最终行动",
         tool_calls=[],
@@ -251,12 +256,71 @@ async def test_successful_auto_view_restores_original_request_and_sends(tmp_path
         messages=messages,
         tool_definitions=[],
     )
-    settled = await plugin.orchestrate_view_before_forward(
+    settled = await run_after_response_hooks(
+        plugin,
         session_id="source-stream",
         response="后续普通响应",
         tool_calls=[],
     )
     assert settled["modified_kwargs"]["tool_calls"] == []
+    await plugin.on_unload()
+
+
+@pytest.mark.asyncio
+async def test_pending_restore_revokes_discarded_early_call(tmp_path: Path) -> None:
+    """验证路径 B 覆盖桥接轮模型调用时同步撤销其一次性凭据。
+
+    系统查看成功后的桥接轮模拟模型又生成一个转发调用。LATE 必须丢弃该调用、
+    撤销 EARLY 为它签发的凭据，并只恢复最初请求；被丢弃参数不能重放，恢复
+    调用仍应正常完成投递。该测试防止编排覆盖留下可用的孤立授权。
+
+    Args:
+        tmp_path: pytest 提供的临时数据目录，用于隔离 pending 和投递状态。
+    """
+
+    plugin = build_plugin(tmp_path)
+    await plugin.on_load()
+    first = await run_after_response_hooks(
+        plugin,
+        session_id="source-stream",
+        response="直接请求",
+        tool_calls=[build_forward_call()],
+    )
+    view_call = first["modified_kwargs"]["tool_calls"][0]
+    messages = build_view_history(view_call, "完整展开内容")
+    await plugin.capture_view_forward_result(
+        session_id="source-stream",
+        messages=messages,
+        tool_definitions=[],
+    )
+    bridge_early = await plugin.authorize_forward_request_context(
+        session_id="source-stream",
+        response="桥接轮模型输出",
+        tool_calls=[build_forward_call(call_id="discarded-call")],
+    )
+    discarded_arguments = deepcopy(bridge_early["modified_kwargs"]["tool_calls"][0]["function"]["arguments"])
+
+    resumed = await plugin.orchestrate_view_before_forward(
+        **bridge_early["modified_kwargs"],
+    )
+    restored = resumed["modified_kwargs"]["tool_calls"][0]
+    discarded = await plugin.request_cross_group_forward(
+        **discarded_arguments,
+        platform="qq",
+        group_id="10001",
+        stream_id="source-stream",
+    )
+    result = await plugin.request_cross_group_forward(
+        **restored["function"]["arguments"],
+        platform="qq",
+        group_id="10001",
+        stream_id="source-stream",
+    )
+    assert discarded["success"] is False
+    assert "可信的 Planner 会话授权" in discarded["content"]
+    assert result["success"] is True
+    await wait_for_background_tasks(plugin)
+    assert plugin.ctx.events[:2] == [("send", "target-a"), ("planner", "target-a")]
     await plugin.on_unload()
 
 
@@ -415,7 +479,7 @@ async def test_handler_rejects_missing_and_replayed_authorization(tmp_path: Path
 
 @pytest.mark.asyncio
 async def test_early_hook_rotates_stale_authorization(tmp_path: Path) -> None:
-    """验证同一 Planner 会话的新响应轮会撤销旧的未消费凭据。
+    """验证新响应轮会撤销输入参数实际回放的旧凭据。
 
     第二次 EARLY Hook 即使收到带旧内部字段的历史参数，也必须签发不同的新
     凭据；旧参数随后应被正式 handler 拒绝，新参数仍能进入查看资格校验。
@@ -464,6 +528,55 @@ async def test_early_hook_rotates_stale_authorization(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_same_session_empty_early_keeps_path_a_authorization(tmp_path: Path) -> None:
+    """验证同 session 的辅助响应不会撤销路径 A 正在执行的凭据。
+
+    主 Planner 已有成功查看资格并经过 EARLY 签发后，模拟 reply 等工具触发
+    同 session、无工具调用的辅助 Planner 响应。主调用随后经过 LATE 和正式
+    handler 仍应完成投递；该测试防止并发辅助请求随机撤销合法主调用，也覆盖
+    路径 A 从两个 Hook 到目标投递的端到端行为。
+
+    Args:
+        tmp_path: pytest 提供的临时数据目录，用于隔离查看和投递状态。
+    """
+
+    plugin = build_plugin(tmp_path)
+    await plugin.on_load()
+    seed_successful_view(plugin)
+    main_early = await plugin.authorize_forward_request_context(
+        session_id="source-stream",
+        response="路径 A 请求",
+        tool_calls=[build_forward_call()],
+    )
+    await plugin.authorize_forward_request_context(
+        session_id="source-stream",
+        response="辅助响应",
+        tool_calls=[],
+    )
+
+    main_late = await plugin.orchestrate_view_before_forward(
+        **main_early["modified_kwargs"],
+    )
+    retained = main_late["modified_kwargs"]["tool_calls"][0]
+    assert retained["function"]["name"] == FORWARD_TOOL_NAME
+    result = await plugin.request_cross_group_forward(
+        **retained["function"]["arguments"],
+        platform="qq",
+        group_id="10001",
+        stream_id="source-stream",
+    )
+    assert result["success"] is True
+    await wait_for_background_tasks(plugin)
+    assert plugin.ctx.events == [
+        ("send", "target-a"),
+        ("planner", "target-a"),
+        ("send", "target-b"),
+        ("planner", "target-b"),
+    ]
+    await plugin.on_unload()
+
+
+@pytest.mark.asyncio
 async def test_late_hook_does_not_rebind_authorization_after_session_change(tmp_path: Path) -> None:
     """验证 EARLY 与 LATE 之间的 session 变化不会改绑转发凭据。
 
@@ -495,6 +608,55 @@ async def test_late_hook_does_not_rebind_authorization_after_session_change(tmp_
         platform="qq",
         group_id="99999",
         stream_id="other-stream",
+    )
+    assert result["success"] is False
+    assert "可信的 Planner 会话授权" in result["content"]
+    assert plugin.ctx.message.calls == []
+    assert plugin.ctx.events == []
+    await plugin.on_unload()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mutation", ["missing_round", "changed_message"])
+async def test_late_hook_rejects_missing_round_or_changed_message(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    """验证 LATE 只接受本次 EARLY 分发链的精确调用绑定。
+
+    分别删除 EARLY 传递的本轮随机标记，或在两个 Hook 之间改写 ``msg_id``；
+    LATE 都必须移除内部凭据且不触发自动查看，正式 handler 随后安全拒绝。
+    该测试防止历史遗留凭据在 EARLY 缺席时被接纳，或被改绑到另一消息。
+
+    Args:
+        tmp_path: pytest 提供的临时数据目录，用于确认没有查看或投递副作用。
+        mutation: 要模拟的 Hook 链异常，取 ``missing_round`` 或
+            ``changed_message``。
+    """
+
+    plugin = build_plugin(tmp_path)
+    await plugin.on_load()
+    early = await plugin.authorize_forward_request_context(
+        session_id="source-stream",
+        response="源群请求",
+        tool_calls=[build_forward_call()],
+    )
+    late_kwargs = deepcopy(early["modified_kwargs"])
+    if mutation == "missing_round":
+        late_kwargs.pop(FORWARD_AUTHORIZATION_ROUND_KWARG)
+    else:
+        late_kwargs["tool_calls"][0]["function"]["arguments"]["msg_id"] = "changed-message"
+
+    late = await plugin.orchestrate_view_before_forward(**late_kwargs)
+    retained = late["modified_kwargs"]["tool_calls"][0]
+    retained_arguments = retained["function"]["arguments"]
+    assert retained["function"]["name"] == FORWARD_TOOL_NAME
+    assert FORWARD_CONTEXT_TOKEN_ARGUMENT not in retained_arguments
+    result = await plugin.request_cross_group_forward(
+        **retained_arguments,
+        platform="qq",
+        group_id="10001",
+        stream_id="source-stream",
     )
     assert result["success"] is False
     assert "可信的 Planner 会话授权" in result["content"]
@@ -740,7 +902,8 @@ async def test_auto_view_retries_until_existing_fallback_boundary(
         tool_definitions=[],
     )
 
-    retry = await plugin.orchestrate_view_before_forward(
+    retry = await run_after_response_hooks(
+        plugin,
         session_id="source-stream",
         response="桥接",
         tool_calls=[],
@@ -759,7 +922,8 @@ async def test_auto_view_retries_until_existing_fallback_boundary(
         messages=messages,
         tool_definitions=[],
     )
-    resumed = await plugin.orchestrate_view_before_forward(
+    resumed = await run_after_response_hooks(
+        plugin,
         session_id="source-stream",
         response="第二次桥接",
         tool_calls=[],
@@ -816,7 +980,8 @@ async def test_non_retryable_auto_view_failure_never_sends(
         messages=messages,
         tool_definitions=[],
     )
-    resumed = await plugin.orchestrate_view_before_forward(
+    resumed = await run_after_response_hooks(
+        plugin,
         session_id="source-stream",
         response="桥接",
         tool_calls=[],
@@ -860,7 +1025,8 @@ async def test_missing_auto_view_result_abandons_resume(tmp_path: Path) -> None:
         tool_definitions=[],
     )
 
-    result = await plugin.orchestrate_view_before_forward(
+    result = await run_after_response_hooks(
+        plugin,
         session_id="source-stream",
         response="结果缺失",
         tool_calls=[],
@@ -899,7 +1065,8 @@ async def test_missing_restored_result_releases_session_for_new_request(tmp_path
         messages=messages,
         tool_definitions=[],
     )
-    restored = await plugin.orchestrate_view_before_forward(
+    restored = await run_after_response_hooks(
+        plugin,
         session_id="source-stream",
         response="恢复请求",
         tool_calls=[],
@@ -1031,7 +1198,8 @@ async def test_auto_view_pending_is_isolated_by_session(tmp_path: Path) -> None:
     )
     assert first["modified_kwargs"]["tool_calls"][0]["function"]["name"] == VIEW_FORWARD_TOOL_NAME
 
-    other = await plugin.orchestrate_view_before_forward(
+    other = await run_after_response_hooks(
+        plugin,
         session_id="another-stream",
         response="B 普通响应",
         tool_calls=[],

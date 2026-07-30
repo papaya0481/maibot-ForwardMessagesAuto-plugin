@@ -137,6 +137,7 @@ class ViewBeforeForwardCoordinator:
         session_id: str,
         response: Any,
         tool_calls: Any,
+        authorization_round: str,
     ) -> tuple[str, Any]:
         """改写 Planner 工具调用以串联真实查看和原始转发请求。
 
@@ -150,6 +151,8 @@ class ViewBeforeForwardCoordinator:
             session_id: 当前 Planner 聊天流 ID；为空时不执行改写。
             response: 模型原始文本响应，改写工具调用时替换为中性说明。
             tool_calls: Host 序列化后的工具调用列表。
+            authorization_round: EARLY Hook 经当前分发链传递的随机标记；
+                缺失时不会接受历史遗留凭据。
 
         Returns:
             二元组包含最终响应文本和工具调用。未接管时原样返回；接管时
@@ -161,6 +164,7 @@ class ViewBeforeForwardCoordinator:
         sanitized_tool_calls = self._invocation_gate.sanitize_for_orchestration(
             normalized_session_id,
             tool_calls,
+            authorization_round,
         )
         if not normalized_session_id:
             return normalized_response, sanitized_tool_calls
@@ -250,6 +254,7 @@ class ViewBeforeForwardCoordinator:
 
         lookup = self._view_eligibility.lookup(session_id, pending.message_id)
         if self._needs_another_view(lookup):
+            self._invocation_gate.revoke_calls(tool_calls)
             view_call = self._build_tool_call(
                 VIEW_FORWARD_TOOL_NAME,
                 {"msg_id": pending.message_id},
@@ -263,6 +268,7 @@ class ViewBeforeForwardCoordinator:
             )
             return "完整内容尚未取得，继续执行系统查看。", [view_call]
 
+        self._invocation_gate.revoke_calls(tool_calls)
         restored_call = self._build_tool_call(
             FORWARD_TOOL_NAME,
             self._invocation_gate.authorize_arguments(

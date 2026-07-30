@@ -88,13 +88,14 @@ QQ 合并转发，再等待同一 `source stream + msg_id` 可查询后调用
 说明，但只有通过 `tool_search` 发现后才能取得完整参数并调用。`after_response`
 的 EARLY 阶段会在不执行 I/O 的情况下清除所有转发调用中的未声明参数，并为
 合法调用签发一次性内部凭据；凭据绑定 Hook 提供的真实 Planner session 与
-`msg_id`。同一 session 的每个新响应轮都会先撤销尚未消费的旧凭据；LATE 编排
-只保留与当前 session 和 `msg_id` 精确匹配的 EARLY 凭据，绝不重新签发或改绑。
-正式处理器必须成功消费凭据，并根据该 session 的可信 Host 映射解析 source
-群号；缺失、未知、错配或已经消费的凭据都会被拒绝。因此 deferred discovery
-不是授权边界，模型也不能通过伪造 `platform`、`group_id`、`stream_id` 或目标
-群绕过校验。Source 表示读取并发起分享的群聊，不要求合并转发内容最初由该群
-产生；target 始终只来自配置。
+`msg_id`。输入参数若回放旧内部凭据，EARLY 只撤销该凭据并换发新值，不影响
+同 session 的其他并发调用；EARLY 另生成只沿当前 Hook 分发链传递的本轮随机
+标记。LATE 编排只保留与该标记、当前 session 和 `msg_id` 全部精确匹配的凭据，
+绝不重新签发或改绑。正式处理器必须成功消费凭据，并根据该 session 的可信
+Host 映射解析 source 群号；缺失、未知、错配或已经消费的凭据都会被拒绝。
+因此 deferred discovery 不是授权边界，模型也不能通过伪造 `platform`、
+`group_id`、`stream_id` 或目标群绕过校验。Source 表示读取并发起分享的群聊，
+不要求合并转发内容最初由该群产生；target 始终只来自配置。
 
 ## 上下文资格与失败恢复
 

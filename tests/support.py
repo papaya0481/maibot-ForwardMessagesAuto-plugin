@@ -565,7 +565,7 @@ def seed_successful_view(
         plugin: 已执行 ``on_load`` 并初始化运行时的插件实例。
         stream_id: 查看资格所属的 source 聊天流 ID。
         message_id: 已经完整查看的合并转发消息 ID。
-        content: 写入目标群上下文的完整查看文本。
+        content: 登记到 source 当前上下文查看资格中的完整文本。
     """
 
     plugin.runtime.view_eligibility.sync_context(

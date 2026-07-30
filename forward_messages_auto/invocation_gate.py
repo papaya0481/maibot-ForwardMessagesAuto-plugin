@@ -9,6 +9,7 @@ from typing import Any
 
 FORWARD_TOOL_NAME = "request_cross_group_forward"
 FORWARD_CONTEXT_TOKEN_ARGUMENT = "_forward_context_token"
+FORWARD_AUTHORIZATION_ROUND_KWARG = "_forward_authorization_round"
 PUBLIC_FORWARD_ARGUMENTS = ("msg_id", "sharing_reason", "content_summary")
 MAX_PENDING_AUTHORIZATIONS = 1024
 
@@ -23,15 +24,15 @@ class ForwardInvocationGate:
         重载或配置更新会清空全部凭据；已经进入投递服务的任务不受影响。
         """
 
-        self._authorizations: OrderedDict[str, tuple[str, str]] = OrderedDict()
+        self._authorizations: OrderedDict[str, tuple[str, str, str]] = OrderedDict()
 
-    def sanitize_and_authorize(self, session_id: str, tool_calls: Any) -> Any:
+    def sanitize_and_authorize(self, session_id: str, tool_calls: Any) -> tuple[Any, str]:
         """清洗全部转发调用，并为本轮有效调用签发新会话凭据。
 
         模型提供的 ``platform``、``group_id``、``stream_id`` 等未声明字段
-        会被删除。非转发工具和供应商附加字段保持不变。每次 EARLY Hook
-        调用都会先撤销该 session 尚未消费的旧凭据，再为当前批次签发新凭据；
-        模型回放历史参数不能复用旧授权。非列表输入原样返回。
+        会被删除。非转发工具和供应商附加字段保持不变。每个转发调用都会撤销
+        其输入参数里携带的旧凭据，再签发本次新凭据；同 session 其他并发请求
+        的凭据不受影响，模型回放历史参数也不能复用旧授权。非列表输入原样返回。
 
         Args:
             session_id: ``after_response`` Hook 提供的真实 Planner 会话 ID；
@@ -39,15 +40,15 @@ class ForwardInvocationGate:
             tool_calls: Host 序列化后的工具调用列表。
 
         Returns:
-            清洗后的工具调用深拷贝；非列表输入保持原值。
+            二元组包含清洗后的工具调用和不可预测的本轮标记；非列表工具
+            输入在第一项保持原值。LATE Hook 必须同时验证标记与调用凭据。
         """
 
+        round_id = token_urlsafe(32)
         if not isinstance(tool_calls, list):
-            return tool_calls
+            return tool_calls, round_id
 
         normalized_session_id = str(session_id or "").strip()
-        if normalized_session_id:
-            self._revoke_session(normalized_session_id)
         sanitized_calls = deepcopy(tool_calls)
         for tool_call in sanitized_calls:
             if not isinstance(tool_call, dict):
@@ -61,6 +62,10 @@ class ForwardInvocationGate:
             if not isinstance(arguments, dict):
                 continue
 
+            stale_token = str(arguments.get(FORWARD_CONTEXT_TOKEN_ARGUMENT) or "").strip()
+            if stale_token:
+                self._authorizations.pop(stale_token, None)
+
             sanitized_arguments = {
                 key: deepcopy(arguments[key]) for key in PUBLIC_FORWARD_ARGUMENTS if key in arguments
             }
@@ -72,30 +77,40 @@ class ForwardInvocationGate:
                 sanitized_arguments[FORWARD_CONTEXT_TOKEN_ARGUMENT] = self._issue(
                     normalized_session_id,
                     message_id,
+                    round_id,
                 )
             function["arguments"] = sanitized_arguments
-        return sanitized_calls
+        return sanitized_calls, round_id
 
-    def sanitize_for_orchestration(self, session_id: str, tool_calls: Any) -> Any:
+    def sanitize_for_orchestration(
+        self,
+        session_id: str,
+        tool_calls: Any,
+        round_id: str,
+    ) -> Any:
         """清洗 LATE Hook 参数，并只保留 EARLY 已签发的有效凭据。
 
         本方法绝不签发或改绑凭据。两个 Hook 之间若配置更新清空授权、其他
-        Hook 改写 ``session_id``，或调用携带未知凭据，内部字段会被删除，
-        自动查看协调器不会接管，正式 handler 最终按缺少授权拒绝。
+        Hook 改写 ``session_id``、本轮标记丢失，或调用携带未知凭据，内部
+        字段会被删除，自动查看协调器不会接管，正式 handler 最终按缺少授权
+        拒绝。
 
         Args:
             session_id: LATE ``after_response`` Hook 当前收到的 Planner 会话 ID。
             tool_calls: 上游 Hook 已处理的序列化工具调用列表。
+            round_id: EARLY Hook 经同一 Hook 链传递的本轮随机标记；为空或
+                不匹配时不接受任何存量凭据。
 
         Returns:
-            清洗后的工具调用深拷贝。只有凭据仍精确绑定当前 session 与
-            ``msg_id`` 时才保留内部字段；非列表输入保持原值。
+            清洗后的工具调用深拷贝。只有凭据仍精确绑定本轮标记、当前
+            session 与 ``msg_id`` 时才保留内部字段；非列表输入保持原值。
         """
 
         if not isinstance(tool_calls, list):
             return tool_calls
 
         normalized_session_id = str(session_id or "").strip()
+        normalized_round_id = str(round_id or "").strip()
         sanitized_calls = deepcopy(tool_calls)
         for tool_call in sanitized_calls:
             if not isinstance(tool_call, dict):
@@ -117,9 +132,15 @@ class ForwardInvocationGate:
                 sanitized_arguments["msg_id"] = message_id
 
             token = str(arguments.get(FORWARD_CONTEXT_TOKEN_ARGUMENT) or "").strip()
-            if token and self._authorizations.get(token) == (
-                normalized_session_id,
-                message_id,
+            if (
+                normalized_round_id
+                and token
+                and self._authorizations.get(token)
+                == (
+                    normalized_session_id,
+                    message_id,
+                    normalized_round_id,
+                )
             ):
                 sanitized_arguments[FORWARD_CONTEXT_TOKEN_ARGUMENT] = token
             elif token:
@@ -152,6 +173,7 @@ class ForwardInvocationGate:
             sanitized_arguments[FORWARD_CONTEXT_TOKEN_ARGUMENT] = self._issue(
                 normalized_session_id,
                 message_id,
+                "",
             )
         return sanitized_arguments
 
@@ -178,7 +200,7 @@ class ForwardInvocationGate:
         authorization = self._authorizations.pop(token, None)
         if authorization is None:
             return ""
-        session_id, authorized_message_id = authorization
+        session_id, authorized_message_id, _ = authorization
         if authorized_message_id != str(message_id or "").strip():
             return ""
         return session_id
@@ -194,39 +216,51 @@ class ForwardInvocationGate:
         if token:
             self._authorizations.pop(token, None)
 
+    def revoke_calls(self, tool_calls: Any) -> None:
+        """撤销一批即将被编排器丢弃的转发调用凭据。
+
+        非转发工具、结构异常调用和不含内部凭据的参数都会被忽略；方法不修改
+        输入列表。该操作用于路径 B 用系统查看或恢复调用替换模型本轮输出前，
+        避免被覆盖调用的凭据继续留在授权表中。
+
+        Args:
+            tool_calls: LATE Hook 已清洗、但即将被替换的工具调用列表。
+        """
+
+        if not isinstance(tool_calls, list):
+            return
+        for tool_call in tool_calls:
+            if not isinstance(tool_call, dict):
+                continue
+            function = tool_call.get("function")
+            if not isinstance(function, dict):
+                continue
+            if str(function.get("name") or "").strip() != FORWARD_TOOL_NAME:
+                continue
+            arguments = function.get("arguments")
+            if isinstance(arguments, dict):
+                self.revoke_arguments(arguments)
+
     def clear(self) -> None:
         """清除全部尚未消费的一次性 Planner 会话凭据。"""
 
         self._authorizations.clear()
 
-    def _issue(self, session_id: str, message_id: str) -> str:
+    def _issue(self, session_id: str, message_id: str, round_id: str) -> str:
         """生成并登记一条有容量上限的一次性授权。
 
         Args:
             session_id: 授权绑定的真实 Planner 会话 ID。
             message_id: 授权绑定的源消息 ID。
+            round_id: EARLY Hook 的本轮标记；由可信路径 B 恢复的 handler
+                凭据使用空字符串，不再经过 LATE 验证。
 
         Returns:
             不透明且不可由模型预测的随机凭据字符串。
         """
 
         token = token_urlsafe(32)
-        self._authorizations[token] = (session_id, message_id)
+        self._authorizations[token] = (session_id, message_id, round_id)
         while len(self._authorizations) > MAX_PENDING_AUTHORIZATIONS:
             self._authorizations.popitem(last=False)
         return token
-
-    def _revoke_session(self, session_id: str) -> None:
-        """撤销某个 Planner 会话尚未消费的全部旧凭据。
-
-        Args:
-            session_id: 即将开始新一轮 EARLY Hook 授权的 Planner 会话 ID。
-        """
-
-        stale_tokens = [
-            token
-            for token, (authorized_session_id, _) in self._authorizations.items()
-            if authorized_session_id == session_id
-        ]
-        for token in stale_tokens:
-            self._authorizations.pop(token, None)

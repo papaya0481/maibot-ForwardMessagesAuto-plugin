@@ -92,7 +92,7 @@ def test_view_result_parser_classifies_known_host_failures(
 
     每种稳定错误前缀以及原始空白结果都应映射为可修正、终止、可重试、
     空内容或未知失败，同时成功结果接口返回空列表。该测试防止错误文本
-    写入目标群上下文，也防止空结果被遗漏或不可恢复错误被误计入阈值。
+    被登记为 source 查看资格，也防止空结果被遗漏或不可恢复错误被误计入阈值。
 
     Args:
         content: pytest 参数化提供的 Host ToolResult 文本。

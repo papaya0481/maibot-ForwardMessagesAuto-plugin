@@ -189,6 +189,7 @@ class ForwardingRuntime:
         session_id: str,
         response: Any,
         tool_calls: Any,
+        authorization_round: str,
     ) -> tuple[str, Any]:
         """编排直接请求的自动查看，并确认普通查看后的判断提醒。
 
@@ -196,6 +197,7 @@ class ForwardingRuntime:
             session_id: 当前 source Planner 聊天流 ID。
             response: 模型原始文本响应。
             tool_calls: Host 序列化后的模型工具调用列表。
+            authorization_round: EARLY Hook 在同一分发链生成的随机标记。
 
         Returns:
             协调器处理后的响应文本与工具调用。路径 A 和未接管响应保持原样；
@@ -206,11 +208,12 @@ class ForwardingRuntime:
             session_id,
             response,
             tool_calls,
+            authorization_round,
         )
         self.acknowledge_view_judgment(session_id)
         return transformed
 
-    def authorize_forward_calls(self, session_id: str, tool_calls: Any) -> Any:
+    def authorize_forward_calls(self, session_id: str, tool_calls: Any) -> tuple[Any, str]:
         """清洗转发参数并绑定真实 ``after_response`` 会话。
 
         该步骤不执行 capability I/O，供 EARLY Hook 在自动查看编排前独立
@@ -222,8 +225,8 @@ class ForwardingRuntime:
             tool_calls: Host 序列化后的模型工具调用列表。
 
         Returns:
-            清除未声明上下文字段并加入内部一次性凭据的工具调用列表；
-            非列表输入保持原值。
+            二元组包含清除未声明字段并加入一次性凭据的工具调用，以及供
+            LATE Hook 验证本次分发链的随机标记。
         """
 
         return self.invocation_gate.sanitize_and_authorize(session_id, tool_calls)
