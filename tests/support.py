@@ -8,7 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-
+from forward_messages_auto.invocation_gate import FORWARD_TOOL_NAME
 from forward_messages_auto.models import ViewObservationKind
 from forward_messages_auto.parsing import (
     ViewToolObservation,
@@ -205,6 +205,19 @@ class FakeChatCapability:
         """
 
         self.streams = streams
+
+    async def get_group_streams(self, platform: str = "qq") -> list[dict[str, Any]]:
+        """返回当前平台下全部预设 QQ 群聊流。
+
+        Args:
+            platform: 待查询平台；测试要求为 ``"qq"``。
+
+        Returns:
+            群聊流字典的独立列表，模拟 SDK 对 ``streams`` 的自动解包。
+        """
+
+        assert platform == "qq"
+        return [dict(stream) for stream in self.streams if stream.get("platform") == platform]
 
     async def get_stream_by_group_id(self, group_id: str, platform: str = "qq") -> dict[str, Any] | None:
         """按群号查找第一条匹配的预设聊天流。
@@ -464,6 +477,64 @@ def build_plugin(
         )
     )
     return plugin
+
+
+async def invoke_forward_tool(
+    plugin: ForwardMessagesAutoPlugin,
+    msg_id: str,
+    sharing_reason: str = "",
+    content_summary: str = "",
+    *,
+    session_id: str = "source-stream",
+    **host_context: Any,
+) -> dict[str, Any]:
+    """按真实 Host 顺序授权并调用自主转发 Tool。
+
+    测试先执行无 I/O 的 EARLY ``after_response`` Hook，取得绑定
+    ``session_id + msg_id`` 的一次性凭据，再模拟 Host 注入执行上下文并调用
+    Tool handler。该辅助函数不会执行路径 B 的自动查看 Hook，便于请求与投递
+    测试独立控制当前查看资格。
+
+    Args:
+        plugin: 已执行 ``on_load`` 并初始化运行时的插件实例。
+        msg_id: Planner 请求分享的源消息 ID。
+        sharing_reason: Planner 提供的分享理由，可为空。
+        content_summary: 达到既有 fallback 边界后使用的摘要，可为空。
+        session_id: EARLY Hook 提供的真实 Planner 会话 ID。
+        **host_context: 模拟 Host 在工具执行时注入的上下文字段；缺失字段会
+            使用与默认测试 source 一致的 QQ 群聊值。
+
+    Returns:
+        ``request_cross_group_forward`` 正式 handler 返回的结果字典。
+    """
+
+    tool_call = {
+        "id": "test-forward-request",
+        "function": {
+            "name": FORWARD_TOOL_NAME,
+            "arguments": {
+                "msg_id": msg_id,
+                "sharing_reason": sharing_reason,
+                "content_summary": content_summary,
+            },
+        },
+    }
+    authorization = await plugin.authorize_forward_request_context(
+        session_id=session_id,
+        response="",
+        tool_calls=[tool_call],
+    )
+    arguments = authorization["modified_kwargs"]["tool_calls"][0]["function"]["arguments"]
+    invocation_context = {
+        "platform": "qq",
+        "group_id": "10001",
+        "stream_id": session_id,
+        **host_context,
+    }
+    return await plugin.request_cross_group_forward(
+        **arguments,
+        **invocation_context,
+    )
 
 
 async def wait_for_background_tasks(plugin: ForwardMessagesAutoPlugin) -> None:

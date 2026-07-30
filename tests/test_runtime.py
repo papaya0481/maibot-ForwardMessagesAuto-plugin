@@ -81,10 +81,28 @@ def test_forward_tool_component_is_deferred_and_group_scoped() -> None:
     assert component["metadata"]["visibility"] == "deferred"
     assert component["metadata"]["timeout_ms"] == 120000
     brief_description = component["metadata"]["brief_description"]
-    assert brief_description == (
-        "根据 msg_id，将已经完整查看且你觉得有意思、符合人设、值得转发的合并转发消息分享到其他群聊。"
-    )
+    assert brief_description == ("根据 msg_id，将你觉得有意思、符合人设、值得转发的合并转发消息分享到其他群聊。")
     assert "白名单" not in brief_description
+
+
+def test_context_authorization_hook_precedes_async_orchestration() -> None:
+    """验证无 I/O 的会话授权先于可能失败的自动查看编排。
+
+    两个处理器必须订阅同一 ``after_response`` Hook，但上下文清洗与一次性
+    授权位于 EARLY，包含 capability 预检的路径 B 编排位于 LATE。该测试
+    防止未来合并或调换顺序，使异步预检超时后 Host 重新执行未清洗调用。
+    """
+
+    plugin = ForwardMessagesAutoPlugin()
+    plugin.set_plugin_config({})
+    components = {item["name"]: item for item in plugin.get_components()}
+    authorization = components["authorize_forward_request_context"]
+    orchestration = components["orchestrate_view_before_forward"]
+    assert authorization["metadata"]["hook"] == "maisaka.planner.after_response"
+    assert orchestration["metadata"]["hook"] == "maisaka.planner.after_response"
+    assert authorization["metadata"]["order"] == "early"
+    assert orchestration["metadata"]["order"] == "late"
+    assert orchestration["metadata"]["timeout_ms"] == 6000
 
 
 @pytest.mark.asyncio
@@ -92,8 +110,9 @@ async def test_group_stream_registry_resolves_targets_on_demand() -> None:
     """验证聊天流注册表只在实际投递时按需解析目标群。
 
     已有 target 应通过 ``get_stream_by_group_id`` 查询，未知 target 应通过
-    ``open_session`` 创建。该测试防止重新引入依赖启动期全量聊天流快照的
-    时序竞态，也防止把 SDK 解包后的聊天流字典误判为失败。
+    ``open_session`` 创建；可信 source 会话应通过群聊流列表反查真实群号。
+    该测试防止重新引入启动期预加载依赖、信任消息元数据中的来源群，或把
+    SDK 解包后的聊天流结构误判为失败。
     """
 
     context = SimpleNamespace(
@@ -106,6 +125,7 @@ async def test_group_stream_registry_resolves_targets_on_demand() -> None:
         logger=logging.getLogger("test.forward-plugin"),
     )
     registry = GroupStreamRegistry(context)
+    assert await registry.resolve_group("source-stream") == "10001"
     assert await registry.resolve("20001") == "target-a"
     assert await registry.resolve("30001") == "opened-30001"
 
@@ -172,7 +192,7 @@ async def test_hook_syncs_view_eligibility_without_rewriting_tool_definitions(tm
     )
     assert "不要等待下一条聊天消息后再作判断" in interrupted_retry_messages[-1]["content"]
 
-    await plugin.acknowledge_view_forward_judgment(
+    await plugin.orchestrate_view_before_forward(
         session_id="current-stream",
         response="我会现在判断",
         tool_calls=[],

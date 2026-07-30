@@ -16,6 +16,7 @@ from tests.support import (
     FakeStaticMessageCapability,
     build_forward_message,
     build_plugin,
+    invoke_forward_tool,
     seed_successful_view,
     sync_failed_views,
     wait_for_background_tasks,
@@ -38,7 +39,8 @@ async def test_tool_rejects_unviewed_and_single_failure_before_fallback(tmp_path
     plugin = build_plugin(tmp_path)
     await plugin.on_load()
 
-    missing_result = await plugin.request_cross_group_forward(
+    missing_result = await invoke_forward_tool(
+        plugin,
         "forward-message",
         content_summary="不应立即使用的摘要",
         platform="qq",
@@ -54,7 +56,8 @@ async def test_tool_rejects_unviewed_and_single_failure_before_fallback(tmp_path
     assert plugin.ctx.events == []
 
     sync_failed_views(plugin, [ViewObservationKind.RETRYABLE_FAILURE])
-    first_failure_result = await plugin.request_cross_group_forward(
+    first_failure_result = await invoke_forward_tool(
+        plugin,
         "forward-message",
         content_summary="仍不应使用的摘要",
         platform="qq",
@@ -73,7 +76,8 @@ async def test_tool_rejects_unviewed_and_single_failure_before_fallback(tmp_path
             ViewObservationKind.RETRYABLE_FAILURE,
         ],
     )
-    fallback_result = await plugin.request_cross_group_forward(
+    fallback_result = await invoke_forward_tool(
+        plugin,
         "forward-message",
         content_summary="两次失败后的降级摘要",
         platform="qq",
@@ -108,7 +112,8 @@ async def test_tool_uses_configured_view_failure_fallback_threshold(tmp_path: Pa
         ],
     )
 
-    before_threshold = await plugin.request_cross_group_forward(
+    before_threshold = await invoke_forward_tool(
+        plugin,
         "forward-message",
         content_summary="两次失败时不应使用的摘要",
         platform="qq",
@@ -127,7 +132,8 @@ async def test_tool_uses_configured_view_failure_fallback_threshold(tmp_path: Pa
             ViewObservationKind.RETRYABLE_FAILURE,
         ],
     )
-    at_threshold = await plugin.request_cross_group_forward(
+    at_threshold = await invoke_forward_tool(
+        plugin,
         "forward-message",
         content_summary="三次失败后的降级摘要",
         platform="qq",
@@ -171,7 +177,8 @@ async def test_non_retryable_failures_never_unlock_fallback(
     await plugin.on_load()
     sync_failed_views(plugin, [failure_kind] * 3)
 
-    result = await plugin.request_cross_group_forward(
+    result = await invoke_forward_tool(
+        plugin,
         "forward-message",
         content_summary="不应使用的摘要",
         platform="qq",
@@ -203,7 +210,8 @@ async def test_empty_view_content_allows_one_diagnostic_retry_before_fallback(
     await plugin.on_load()
     sync_failed_views(plugin, [ViewObservationKind.EMPTY_CONTENT_FAILURE])
 
-    first_result = await plugin.request_cross_group_forward(
+    first_result = await invoke_forward_tool(
+        plugin,
         "forward-message",
         content_summary="首次不应使用的摘要",
         platform="qq",
@@ -220,7 +228,8 @@ async def test_empty_view_content_allows_one_diagnostic_retry_before_fallback(
             ViewObservationKind.EMPTY_CONTENT_FAILURE,
         ],
     )
-    second_result = await plugin.request_cross_group_forward(
+    second_result = await invoke_forward_tool(
+        plugin,
         "forward-message",
         content_summary="连续空内容后的降级摘要",
         platform="qq",
@@ -252,7 +261,8 @@ async def test_tool_rejects_after_successful_view_leaves_current_context(tmp_pat
     seed_successful_view(plugin)
     plugin.runtime.view_eligibility.sync_context("source-stream", [])
 
-    result = await plugin.request_cross_group_forward(
+    result = await invoke_forward_tool(
+        plugin,
         "forward-message",
         content_summary="不应使用的上下文外摘要",
         platform="qq",
@@ -286,7 +296,8 @@ async def test_tool_waits_for_real_delivery_before_reporting_success(tmp_path: P
     seed_successful_view(plugin)
 
     request_task = asyncio.create_task(
-        plugin.request_cross_group_forward(
+        invoke_forward_tool(
+            plugin,
             "forward-message",
             sharing_reason="很有意思",
             platform="qq",
@@ -324,7 +335,8 @@ async def test_tool_sends_targets_in_order_and_deduplicates(tmp_path: Path) -> N
     await plugin.on_load()
     seed_successful_view(plugin)
 
-    result = await plugin.request_cross_group_forward(
+    result = await invoke_forward_tool(
+        plugin,
         "forward-message",
         sharing_reason="很有意思",
         platform="qq",
@@ -354,7 +366,8 @@ async def test_tool_sends_targets_in_order_and_deduplicates(tmp_path: Path) -> N
     assert "完整内容已经写入当前上下文" not in target_intent
     assert plugin.ctx.message.calls == [("forward-message", "source-stream", True)]
 
-    repeated = await plugin.request_cross_group_forward(
+    repeated = await invoke_forward_tool(
+        plugin,
         "forward-message",
         platform="qq",
         group_id="10001",
@@ -425,7 +438,8 @@ async def test_send_result_without_message_id_keeps_safe_reply_fallback(
     await plugin.on_load()
     seed_successful_view(plugin)
 
-    result = await plugin.request_cross_group_forward(
+    result = await invoke_forward_tool(
+        plugin,
         "forward-message",
         platform="qq",
         group_id="10001",
@@ -469,7 +483,8 @@ async def test_new_target_does_not_resend_completed_existing_target(tmp_path: Pa
     first_plugin = build_plugin(tmp_path, target_groups=["20001"])
     await first_plugin.on_load()
     seed_successful_view(first_plugin)
-    first_result = await first_plugin.request_cross_group_forward(
+    first_result = await invoke_forward_tool(
+        first_plugin,
         "forward-message",
         platform="qq",
         group_id="10001",
@@ -485,7 +500,8 @@ async def test_new_target_does_not_resend_completed_existing_target(tmp_path: Pa
     )
     await expanded_plugin.on_load()
     seed_successful_view(expanded_plugin)
-    expanded_result = await expanded_plugin.request_cross_group_forward(
+    expanded_result = await invoke_forward_tool(
+        expanded_plugin,
         "forward-message",
         platform="qq",
         group_id="10001",
@@ -551,7 +567,8 @@ async def test_legacy_route_jobs_migrate_and_preserve_highest_target_stage(
     plugin = build_plugin(tmp_path)
     await plugin.on_load()
     seed_successful_view(plugin)
-    result = await plugin.request_cross_group_forward(
+    result = await invoke_forward_tool(
+        plugin,
         "forward-message",
         platform="qq",
         group_id="10001",
@@ -592,7 +609,8 @@ async def test_source_message_query_accepts_legacy_wrapped_success(tmp_path: Pat
     plugin.ctx.message = FakeStaticMessageCapability({"success": True, "message": build_forward_message()})
     await plugin.on_load()
     seed_successful_view(plugin)
-    result = await plugin.request_cross_group_forward(
+    result = await invoke_forward_tool(
+        plugin,
         "forward-message",
         content_summary="降级摘要",
         platform="qq",
@@ -620,7 +638,8 @@ async def test_source_message_query_preserves_host_failure_reason(tmp_path: Path
     plugin = build_plugin(tmp_path)
     plugin.ctx.message = FakeStaticMessageCapability({"success": False, "error": "消息不属于指定聊天流"})
     await plugin.on_load()
-    result = await plugin.request_cross_group_forward(
+    result = await invoke_forward_tool(
+        plugin,
         "forward-message",
         platform="qq",
         group_id="10001",
@@ -647,7 +666,8 @@ async def test_source_message_query_reports_missing_host_error(tmp_path: Path) -
     plugin = build_plugin(tmp_path)
     plugin.ctx.message = FakeStaticMessageCapability({"success": False})
     await plugin.on_load()
-    result = await plugin.request_cross_group_forward(
+    result = await invoke_forward_tool(
+        plugin,
         "forward-message",
         platform="qq",
         group_id="10001",
@@ -678,7 +698,8 @@ async def test_source_group_can_share_forward_received_from_another_group(tmp_pa
     )
     await plugin.on_load()
     seed_successful_view(plugin, content="来自其他群的合并转发完整内容")
-    result = await plugin.request_cross_group_forward(
+    result = await invoke_forward_tool(
+        plugin,
         "forward-message",
         content_summary="来自其他群的合并转发摘要",
         platform="qq",
@@ -711,7 +732,8 @@ async def test_source_group_cannot_read_message_from_another_stream(tmp_path: Pa
     plugin = build_plugin(tmp_path)
     plugin.ctx.message = FakeMessageCapability(build_forward_message(stream_id="other-stream", group_id="10001"))
     await plugin.on_load()
-    result = await plugin.request_cross_group_forward(
+    result = await invoke_forward_tool(
+        plugin,
         "forward-message",
         platform="qq",
         group_id="10001",
@@ -738,7 +760,8 @@ async def test_send_failure_skips_planner_but_continues_next_target(tmp_path: Pa
     plugin = build_plugin(tmp_path, failed_streams={"target-a"})
     await plugin.on_load()
     seed_successful_view(plugin)
-    result = await plugin.request_cross_group_forward(
+    result = await invoke_forward_tool(
+        plugin,
         "forward-message",
         content_summary="降级摘要",
         platform="qq",
@@ -775,9 +798,12 @@ async def test_tool_rejects_non_source_group(tmp_path: Path) -> None:
     """
 
     plugin = build_plugin(tmp_path)
+    plugin.ctx.chat.streams.append({"platform": "qq", "group_id": "99999", "stream_id": "other-stream"})
     await plugin.on_load()
-    result = await plugin.request_cross_group_forward(
+    result = await invoke_forward_tool(
+        plugin,
         "forward-message",
+        session_id="other-stream",
         platform="qq",
         group_id="99999",
         stream_id="other-stream",

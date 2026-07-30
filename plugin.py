@@ -153,8 +153,9 @@ class ForwardMessagesAutoPlugin(MaiBotPlugin):
     ) -> None:
         """确认 Runner 已写入的新配置并记录热更新。
 
-        运行时服务通过动态配置提供器读取白名单和行为字段，不需要清理
-        查看资格或永久防重状态；方法只检查版本并记录更新信息。
+        运行时服务通过动态配置提供器读取白名单和行为字段，不清理查看资格
+        或永久防重状态；尚未发送的路径 B 续接请求会被取消，避免旧授权跨越
+        启用状态或路由变更后恢复。方法随后检查版本并记录更新信息。
 
         Args:
             scope: 配置更新范围，由 MaiBot Runner 提供并写入日志。
@@ -164,6 +165,8 @@ class ForwardMessagesAutoPlugin(MaiBotPlugin):
         """
 
         del config_data
+        if self._runtime is not None:
+            self.runtime.cancel_pending_direct_forwards()
         self._warn_for_version_mismatch()
         self.ctx.logger.info("自主跨群转发配置已更新: scope=%s version=%s", scope, version)
 
@@ -260,25 +263,66 @@ class ForwardMessagesAutoPlugin(MaiBotPlugin):
 
     @HookHandler(
         "maisaka.planner.after_response",
-        name="acknowledge_view_forward_judgment",
-        description="确认 Planner 已完成成功查看后的续轮判断。",
+        name="authorize_forward_request_context",
+        description="清除模型伪造上下文字段，并为转发调用绑定真实 Planner 会话。",
         mode=HookMode.BLOCKING,
-        order=HookOrder.LATE,
+        order=HookOrder.EARLY,
         timeout_ms=3000,
         error_policy=ErrorPolicy.SKIP,
     )
-    async def acknowledge_view_forward_judgment(self, **kwargs: Any) -> dict[str, Any]:
-        """在 Planner 成功返回后清除对应聊天流的一次性判断提醒。
+    async def authorize_forward_request_context(self, **kwargs: Any) -> dict[str, Any]:
+        """在任何异步预检前清洗参数并签发一次性会话凭据。
 
-        被新消息中断的 Planner 请求不会触发本 Hook，因此待处理提醒会保留
-        到重试请求；正常返回后立即清除，避免未来无关消息再次触发旧判断。
+        方法不调用 Host capability。即使后续自动查看 Hook 超时或失败，本次
+        修改仍由 Host Hook 链保留；如果本 Hook 自身未执行成功，正式 Tool
+        handler 会因缺少一次性凭据而拒绝原始模型调用，不会信任模型提供的
+        ``platform``、``group_id`` 或 ``stream_id``。
 
         Args:
-            **kwargs: ``maisaka.planner.after_response`` Hook 参数。仅读取
-                ``session_id``，其余响应和工具调用字段保持不变。
+            **kwargs: ``maisaka.planner.after_response`` Hook 参数。读取真实
+                ``session_id`` 和序列化 ``tool_calls``，保留其他响应字段。
 
         Returns:
-            保持 Planner 响应不变的阻塞 Hook 继续结果。
+            阻塞 Hook 的继续结果，其中转发调用只保留公开参数并附带内部
+            一次性凭据；其他工具调用与响应字段保持不变。
+
+        Raises:
+            RuntimeError: Hook 在 ``on_load`` 初始化运行时前被调用。
+        """
+
+        session_id = str(kwargs.get("session_id") or "").strip()
+        kwargs["tool_calls"] = self.runtime.authorize_forward_calls(
+            session_id,
+            kwargs.get("tool_calls"),
+        )
+        return {"action": "continue", "modified_kwargs": kwargs}
+
+    @HookHandler(
+        "maisaka.planner.after_response",
+        name="orchestrate_view_before_forward",
+        description="未查看时先执行真实合并转发查看，再恢复原转发请求。",
+        mode=HookMode.BLOCKING,
+        order=HookOrder.LATE,
+        timeout_ms=6000,
+        error_policy=ErrorPolicy.SKIP,
+    )
+    async def orchestrate_view_before_forward(self, **kwargs: Any) -> dict[str, Any]:
+        """在工具执行前编排自动查看并清除已消费的判断提醒。
+
+        对单独出现的直接转发请求，当前上下文没有成功查看或允许降级资格时，
+        方法将其替换成真实 ``view_forward_message``。下一 Planner 续轮捕获
+        精确结果后，再恢复最初的转发参数；同一批不会同时查看和发送。路径 A
+        的调用保持原样。被新消息中断的 Planner 请求不会触发本 Hook，因此
+        尚未消费的普通查看判断提醒会继续保留。
+
+        Args:
+            **kwargs: ``maisaka.planner.after_response`` Hook 参数。读取
+                ``session_id``、``response`` 和 ``tool_calls``，并保留其他
+                统计及选择字段。
+
+        Returns:
+            阻塞 Hook 的继续结果。未接管时响应保持原样；路径 B 会在
+            ``modified_kwargs`` 中写回唯一的查看或恢复转发调用。
 
         Raises:
             RuntimeError: Hook 在 ``on_load`` 初始化运行时前被调用。
@@ -286,17 +330,21 @@ class ForwardMessagesAutoPlugin(MaiBotPlugin):
 
         session_id = str(kwargs.get("session_id") or "").strip()
         if session_id:
-            self.runtime.acknowledge_view_judgment(session_id)
+            response, tool_calls = await self.runtime.transform_after_response(
+                session_id,
+                kwargs.get("response"),
+                kwargs.get("tool_calls"),
+            )
+            kwargs["response"] = response
+            kwargs["tool_calls"] = tool_calls
         return {"action": "continue", "modified_kwargs": kwargs}
 
     @Tool(
         FORWARD_TOOL_NAME,
-        brief_description=(
-            "根据 msg_id，将已经完整查看且你觉得有意思、符合人设、值得转发的合并转发消息分享到其他群聊。"
-        ),
+        brief_description=("根据 msg_id，将你觉得有意思、符合人设、值得转发的合并转发消息分享到其他群聊。"),
         detailed_description=(
-            "仅在你已经成功调用 view_forward_message 查看 msg_id 的全部内容，并自主判断值得分享时调用。"
-            "该成功查看结果必须仍在当前上下文中；目标群由插件白名单决定，禁止自行指定目标群。"
+            "可以在成功调用 view_forward_message 查看全部内容后请求，也可以根据当前消息预览直接请求；"
+            "直接请求时插件会先执行真实查看，再恢复本次转发。目标群由插件白名单决定，禁止自行指定目标群。"
             "content_summary 只在连续可重试故障达到配置阈值或连续两次返回空内容时降级使用。"
             "工具会等待全部目标群的真实处理结果；只有 success=true 且 status=succeeded 才表示完整成功。"
         ),
@@ -304,7 +352,7 @@ class ForwardMessagesAutoPlugin(MaiBotPlugin):
             ToolParameterInfo(
                 name="msg_id",
                 param_type=ToolParamType.STRING,
-                description="刚刚通过 view_forward_message 完整查看过的源合并转发消息 ID",
+                description="要分享的源合并转发消息 ID",
                 required=True,
             ),
             ToolParameterInfo(
@@ -317,7 +365,7 @@ class ForwardMessagesAutoPlugin(MaiBotPlugin):
             ToolParameterInfo(
                 name="content_summary",
                 param_type=ToolParamType.STRING,
-                description=("对完整转发内容的忠实摘要，仅在连续可重试故障达到配置阈值或连续两次返回空内容时降级使用"),
+                description=("对当前已知内容的忠实摘要，仅在连续可重试故障达到配置阈值或连续两次返回空内容时降级使用"),
                 required=False,
                 default="",
             ),
@@ -333,19 +381,20 @@ class ForwardMessagesAutoPlugin(MaiBotPlugin):
         content_summary: str = "",
         **kwargs: Any,
     ) -> dict[str, Any]:
-        """请求把一则已完整查看的 source 合并转发分享至白名单群。
+        """请求把一则 source 合并转发分享至白名单群。
 
         该 Tool 不接收 target 参数；目标集合和顺序只能来自插件配置。方法
-        将 SDK 调用上下文和 Planner 参数交给运行时，并等待全部 target 的
-        真实顺序处理报告；只有全部完成时才向 Planner 返回成功。
+        将 SDK 调用上下文和 Planner 参数交给运行时。Planner 未提前查看时，
+        ``after_response`` Hook 会先执行真实查看并在后续内部轮恢复相同参数；
+        处理器本身继续校验查看资格，并等待全部 target 的真实顺序结果。
 
         Args:
-            msg_id: 刚通过 ``view_forward_message`` 查看过的源消息 ID。
+            msg_id: 要分享的源合并转发消息 ID。
             sharing_reason: Planner 判断内容值得分享的简短理由。
             content_summary: 连续可重试故障达到配置阈值或连续两次返回
                 空内容时使用的忠实摘要。
-            **kwargs: SDK 注入的 Tool 上下文。必须能解析 QQ ``platform``、
-                ``group_id`` 和 ``stream_id`` 或 ``chat_id``。
+            **kwargs: Runner 传入的完整 Tool 参数。正式入口只消费 EARLY Hook
+                生成的内部一次性凭据；模型提供的 Host 上下文字段不参与授权。
 
         Returns:
             Planner 可读的真实任务结果。新任务包含 ``accepted=True``、

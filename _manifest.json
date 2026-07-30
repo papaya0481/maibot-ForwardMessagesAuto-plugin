@@ -35,6 +35,7 @@
   "capabilities": [
     "send.forward",
     "message.get_by_id",
+    "chat.get_group_streams",
     "chat.get_stream_by_group_id",
     "chat.open_session",
     "maisaka.proactive.trigger"

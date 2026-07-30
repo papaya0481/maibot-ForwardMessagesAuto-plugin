@@ -7,14 +7,15 @@ from typing import Any
 
 from .config import ForwardMessagesAutoConfig, GroupIdList
 from .delivery import ForwardDeliveryService
+from .invocation_gate import FORWARD_TOOL_NAME as FORWARD_TOOL_NAME
+from .invocation_gate import ForwardInvocationGate
 from .parsing import PlannerHistoryParser
 from .request import ForwardRequestService
 from .state import ForwardStateStore
 from .streams import GroupStreamRegistry
 from .source_trigger import SourcePlannerTriggerService
 from .view_context import ViewEligibilityStore
-
-FORWARD_TOOL_NAME = "request_cross_group_forward"
+from .view_before_forward import ViewBeforeForwardCoordinator
 
 
 class ForwardingRuntime:
@@ -56,12 +57,21 @@ class ForwardingRuntime:
             self.streams,
             self.state,
         )
+        self.invocation_gate = ForwardInvocationGate()
         self.requests = ForwardRequestService(
             context,
             config_provider,
             self.view_eligibility,
             self.state,
             self.delivery,
+            self.streams.resolve_group,
+        )
+        self.view_before_forward = ViewBeforeForwardCoordinator(
+            config_provider,
+            self.view_eligibility,
+            self.invocation_gate,
+            self.requests.can_auto_view,
+            context.logger,
         )
 
     @property
@@ -124,6 +134,7 @@ class ForwardingRuntime:
         遗留任务继续调用 Host capability。
         """
 
+        self.cancel_pending_direct_forwards()
         await self.source_trigger.stop()
         await self.delivery.stop()
         await self.state.save()
@@ -163,9 +174,69 @@ class ForwardingRuntime:
             session_id,
             observations,
         )
-        if fresh_message_ids:
-            self._pending_view_judgments.setdefault(session_id, set()).update(fresh_message_ids)
+        auto_view_message_ids = self.view_before_forward.capture_context(
+            session_id,
+            messages,
+            observations,
+        )
+        manual_message_ids = [message_id for message_id in fresh_message_ids if message_id not in auto_view_message_ids]
+        if manual_message_ids:
+            self._pending_view_judgments.setdefault(session_id, set()).update(manual_message_ids)
         return fresh_message_ids
+
+    async def transform_after_response(
+        self,
+        session_id: str,
+        response: Any,
+        tool_calls: Any,
+    ) -> tuple[str, Any]:
+        """编排直接请求的自动查看，并确认普通查看后的判断提醒。
+
+        Args:
+            session_id: 当前 source Planner 聊天流 ID。
+            response: 模型原始文本响应。
+            tool_calls: Host 序列化后的模型工具调用列表。
+
+        Returns:
+            协调器处理后的响应文本与工具调用。路径 A 和未接管响应保持原样；
+            路径 B 会只返回一个系统查看或恢复后的转发调用。
+        """
+
+        transformed = await self.view_before_forward.transform_after_response(
+            session_id,
+            response,
+            tool_calls,
+        )
+        self.acknowledge_view_judgment(session_id)
+        return transformed
+
+    def authorize_forward_calls(self, session_id: str, tool_calls: Any) -> Any:
+        """清洗转发参数并绑定真实 ``after_response`` 会话。
+
+        该步骤不执行 capability I/O，供 EARLY Hook 在自动查看编排前独立
+        完成。即使后续 Hook 超时，正式 Tool handler 也只接受这里签发的
+        一次性凭据；缺少凭据的原始模型调用会被拒绝。
+
+        Args:
+            session_id: Host Hook 提供的真实 Planner 会话 ID。
+            tool_calls: Host 序列化后的模型工具调用列表。
+
+        Returns:
+            清除未声明上下文字段并加入内部一次性凭据的工具调用列表；
+            非列表输入保持原值。
+        """
+
+        return self.invocation_gate.sanitize_and_authorize(session_id, tool_calls)
+
+    def cancel_pending_direct_forwards(self) -> None:
+        """取消尚未发送的路径 B 续接请求。
+
+        配置热更新和插件卸载都会调用该方法，避免旧分享授权跨越配置边界后
+        在未来普通 Planner 响应中复活。已经开始的真实投递不受影响。
+        """
+
+        self.view_before_forward.clear()
+        self.invocation_gate.clear()
 
     def build_view_judgment_reminder(self, session_id: str) -> str:
         """构造成功查看后等待 Planner 消费的续轮判断提醒。
@@ -213,11 +284,12 @@ class ForwardingRuntime:
         """将 Tool 调用委托给请求服务完成校验和真实投递。
 
         Args:
-            msg_id: source Planner 已完整查看的合并转发消息 ID。
+            msg_id: source Planner 请求分享的合并转发消息 ID。
             sharing_reason: Planner 给出的分享理由，可为空。
             content_summary: 连续可重试故障达到配置阈值或连续两次返回
                 空内容时使用的忠实摘要，可为空。
-            invocation_context: SDK 注入的调用上下文；请求服务读取
+            invocation_context: Runner 传入的完整调用参数。运行时只消费
+                EARLY Hook 签发的一次性凭据，不信任其中模型可写的
                 ``platform``、``group_id``、``stream_id`` 或 ``chat_id``。
 
         Returns:
@@ -227,9 +299,17 @@ class ForwardingRuntime:
             校验或投递失败返回 ``success=False`` 和中文 ``content``。
         """
 
+        source_stream_id = self.invocation_gate.consume(
+            msg_id,
+            invocation_context,
+        )
+        if not source_stream_id:
+            return self.requests.failure(
+                "转发请求缺少可信的 Planner 会话授权，已拒绝执行；请在当前 Planner 轮次重新发起请求。"
+            )
         return await self.requests.create(
             msg_id,
             sharing_reason,
             content_summary,
-            invocation_context,
+            source_stream_id,
         )

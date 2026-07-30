@@ -19,6 +19,7 @@ class GroupStreamRegistry:
 
         self._ctx = context
         self._streams_by_group: dict[str, str] = {}
+        self._groups_by_stream: dict[str, str] = {}
 
     async def resolve(self, group_id: str) -> str:
         """按 QQ 群号解析目标聊天流，必要时创建群聊会话。
@@ -47,6 +48,7 @@ class GroupStreamRegistry:
         stream_id = self._extract_stream_id(result)
         if stream_id:
             self._streams_by_group[group_id] = stream_id
+            self._groups_by_stream[stream_id] = group_id
             return stream_id
 
         try:
@@ -61,7 +63,71 @@ class GroupStreamRegistry:
         stream_id = self._extract_stream_id(result)
         if stream_id:
             self._streams_by_group[group_id] = stream_id
+            self._groups_by_stream[stream_id] = group_id
         return stream_id
+
+    async def resolve_group(self, stream_id: str) -> str:
+        """从 Host 的真实群聊流列表反查 source 群号。
+
+        该方法不读取模型提供的 ``group_id``。首次查询会通过
+        ``chat.get_group_streams`` 获取 QQ 群聊流，并同时刷新正反向缓存；
+        capability 失败或目标流不存在时记录警告并返回空字符串，不会尝试
+        创建 source 会话。
+
+        Args:
+            stream_id: ``after_response`` Hook 绑定并由一次性凭据恢复的真实
+                Planner 会话 ID。
+
+        Returns:
+            找到对应 QQ 群聊流时返回群号字符串，否则返回空字符串。
+        """
+
+        normalized_stream_id = str(stream_id or "").strip()
+        if not normalized_stream_id:
+            return ""
+        if group_id := self._groups_by_stream.get(normalized_stream_id):
+            return group_id
+
+        try:
+            result = await self._ctx.chat.get_group_streams(platform="qq")
+        except Exception as exc:
+            self._ctx.logger.warning(
+                "读取 source 群聊流失败: stream=%s error=%s",
+                normalized_stream_id,
+                exc,
+            )
+            return ""
+
+        streams = self._extract_streams(result)
+        for stream in streams:
+            candidate_stream_id = self._extract_stream_id(stream)
+            candidate_group_id = str(stream.get("group_id") or "").strip()
+            if not candidate_stream_id or not candidate_group_id:
+                continue
+            self._streams_by_group[candidate_group_id] = candidate_stream_id
+            self._groups_by_stream[candidate_stream_id] = candidate_group_id
+        return self._groups_by_stream.get(normalized_stream_id, "")
+
+    @staticmethod
+    def _extract_streams(result: Any) -> list[dict[str, Any]]:
+        """规范化群聊流 capability 的当前与旧版成功响应。
+
+        Args:
+            result: ``chat.get_group_streams`` 返回值。支持 SDK 解包后的列表，
+                以及旧版 ``success/streams`` 包装字典。
+
+        Returns:
+            仅包含字典项的独立列表；失败或格式异常时返回空列表。
+        """
+
+        if isinstance(result, list):
+            return [dict(item) for item in result if isinstance(item, dict)]
+        if not isinstance(result, dict) or result.get("success") is False:
+            return []
+        streams = result.get("streams")
+        if not isinstance(streams, list):
+            return []
+        return [dict(item) for item in streams if isinstance(item, dict)]
 
     @staticmethod
     def _extract_stream_id(result: Any) -> str:

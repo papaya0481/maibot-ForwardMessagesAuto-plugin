@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from .config import ForwardMessagesAutoConfig, GroupIdList
@@ -32,6 +32,7 @@ class ForwardRequestService:
         view_eligibility: ViewEligibilityStore,
         state: ForwardStateStore,
         delivery: ForwardDeliveryService,
+        source_group_resolver: Callable[[str], Awaitable[str]],
     ) -> None:
         """创建负责 Tool 请求前置处理的服务。
 
@@ -41,6 +42,8 @@ class ForwardRequestService:
             view_eligibility: 保存源 Planner 当前上下文查看资格的共享索引。
             state: 提供幂等完成判断的持久化状态存储。
             delivery: 接收已验证 ``ForwardJob`` 的后台投递服务。
+            source_group_resolver: 根据可信 source 会话 ID 从 Host 群聊流列表
+                反查真实群号的异步回调。
         """
 
         self._ctx = context
@@ -48,6 +51,7 @@ class ForwardRequestService:
         self._view_eligibility = view_eligibility
         self._state = state
         self._delivery = delivery
+        self._source_group_resolver = source_group_resolver
 
     @property
     def config(self) -> ForwardMessagesAutoConfig:
@@ -64,23 +68,22 @@ class ForwardRequestService:
         msg_id: str,
         sharing_reason: str,
         content_summary: str,
-        invocation_context: dict[str, Any],
+        source_stream_id: str,
     ) -> dict[str, Any]:
         """校验转发请求、读取源消息并等待真实投递结果。
 
-        处理顺序包括调用环境校验、source 消息归属校验、合并转发节点解析、
-        查看资格判断和幂等检查。所有校验通过后创建受生命周期管理的投递
-        任务，并等待全部 target 按顺序完成或失败，再向 Planner 返回聚合
-        结果；调用方取消等待时不会连带取消已经开始的投递。
+        ``source_stream_id`` 已由正式入口的一次性凭据恢复，不读取模型可写
+        的 Host 上下文字段。方法先从 Host 群聊流反查真实 source 群并校验
+        权限，再完成消息归属、合并转发节点、查看资格和幂等检查。所有校验
+        通过后创建受生命周期管理的投递任务，并等待全部 target 按顺序完成
+        或失败；调用方取消等待时不会连带取消已经开始的投递。
 
         Args:
-            msg_id: source Planner 刚通过 ``view_forward_message`` 查看过的
-                合并转发消息 ID。
+            msg_id: source Planner 请求分享的合并转发消息 ID。
             sharing_reason: Planner 对“为何值得分享”的简短说明，可为空。
             content_summary: 连续可重试失败达到阈值或连续两次返回空内容时
                 使用的忠实摘要，可为空。
-            invocation_context: SDK 注入的 Tool 调用上下文。必须提供 QQ
-                ``platform``、``group_id``，以及 ``stream_id`` 或 ``chat_id``。
+            source_stream_id: 已由一次性授权绑定的真实 Planner 会话 ID。
 
         Returns:
             Planner 可读的结果字典。新任务真实完成后包含 ``completed=True``、
@@ -93,7 +96,16 @@ class ForwardRequestService:
                 保留已经开始的投递任务。
         """
 
-        validation = self._validate_invocation(msg_id, invocation_context)
+        normalized_stream_id = str(source_stream_id or "").strip()
+        source_group_id = await self._source_group_resolver(normalized_stream_id)
+        validation = self._validate_invocation(
+            msg_id,
+            {
+                "platform": "qq",
+                "group_id": source_group_id,
+                "stream_id": normalized_stream_id,
+            },
+        )
         if isinstance(validation, dict):
             return validation
         source_stream_id, source_group_id, source_message_id, target_group_ids = validation
@@ -146,6 +158,70 @@ class ForwardRequestService:
         delivery_task = self._delivery.schedule(job)
         report = await asyncio.shield(delivery_task)
         return self._build_delivery_result(report)
+
+    async def can_auto_view(
+        self,
+        source_stream_id: str,
+        source_message_id: str,
+    ) -> bool:
+        """在执行系统查看前完成无副作用的可信请求预检。
+
+        ``after_response`` Hook 只有当前 ``session_id``，不能信任模型参数中
+        可能伪造的 ``platform``、``group_id`` 或 ``stream_id``。本方法先从
+        Host 群聊流列表反查真实 QQ 群号并完成权限和永久防重校验，再按该
+        聊天流读取消息并验证归属及类型。预检失败只阻止自动查看，原 Tool
+        调用仍交给正式处理器返回具体错误。
+
+        Args:
+            source_stream_id: 当前 Planner Hook 提供的 source 聊天流 ID。
+            source_message_id: 直接请求中声明的源合并转发消息 ID。
+
+        Returns:
+            请求尚未活动或完成，且通过当前全部发送前置校验时返回 ``True``；
+            读取失败、权限不符、消息无效、无 target 或重复任务返回 ``False``。
+        """
+
+        normalized_stream_id = str(source_stream_id or "").strip()
+        normalized_message_id = str(source_message_id or "").strip()
+        if not normalized_stream_id or not normalized_message_id:
+            return False
+
+        source_group_id = await self._source_group_resolver(normalized_stream_id)
+        validation = self._validate_invocation(
+            normalized_message_id,
+            {
+                "platform": "qq",
+                "group_id": source_group_id,
+                "stream_id": normalized_stream_id,
+            },
+        )
+        if isinstance(validation, dict):
+            return False
+        _, _, _, target_group_ids = validation
+
+        state_key = self._state.build_state_key(
+            normalized_stream_id,
+            normalized_message_id,
+        )
+        job_id = state_key.rsplit(":", 1)[-1]
+        if self._duplicate_result(state_key, job_id, target_group_ids) is not None:
+            return False
+
+        message_result = await self._get_source_message(
+            normalized_message_id,
+            normalized_stream_id,
+            include_binary_data=False,
+        )
+        if isinstance(message_result.get("_failure"), str):
+            return False
+        message_error = self._validate_source_message(
+            message_result,
+            normalized_stream_id,
+        )
+        if message_error or ForwardMessageParser.extract(message_result) is None:
+            return False
+
+        return True
 
     @staticmethod
     def _build_delivery_result(report: ForwardDeliveryReport) -> dict[str, Any]:
@@ -231,7 +307,7 @@ class ForwardRequestService:
         if source_group_id not in set(GroupIdList.normalize(self.config.routing.source_groups)):
             return self.failure("当前群不在 source 白名单中，不能发起跨群转发。")
         if not source_message_id:
-            return self.failure("必须提供刚刚查看过的合并转发消息 msg_id。")
+            return self.failure("必须提供要分享的合并转发消息 msg_id。")
 
         target_group_ids = [
             group_id
@@ -246,8 +322,10 @@ class ForwardRequestService:
         self,
         source_message_id: str,
         source_stream_id: str,
+        *,
+        include_binary_data: bool = True,
     ) -> dict[str, Any]:
-        """从 Host 获取包含媒体二进制数据的源消息。
+        """从 Host 获取 source 消息，并按调用阶段决定是否读取媒体二进制。
 
         当前 SDK 会把成功响应自动解包为消息字典；方法同时兼容旧版 SDK
         返回的 ``{"success": True, "message": ...}`` 包装。capability 异常、
@@ -257,6 +335,8 @@ class ForwardRequestService:
         Args:
             source_message_id: 要读取的 source 消息 ID。
             source_stream_id: 限制查询范围的 source 聊天流 ID。
+            include_binary_data: 正式发送准备时为 ``True``，确保媒体节点可以
+                重建；自动查看预检时为 ``False``，只读取消息归属和结构。
 
         Returns:
             成功时返回 Host 消息字典；失败时返回
@@ -267,7 +347,7 @@ class ForwardRequestService:
             result = await self._ctx.message.get_by_id(
                 source_message_id,
                 stream_id=source_stream_id,
-                include_binary_data=True,
+                include_binary_data=include_binary_data,
             )
         except Exception as exc:
             self._ctx.logger.warning(

@@ -10,12 +10,13 @@ from forward_messages_auto.config import CONFIG_VERSION, PLUGIN_VERSION
 from plugin import ForwardMessagesAutoPlugin
 
 
-def test_manifest_has_no_adapter_plugin_dependency() -> None:
-    """确保 Manifest 不声明适配器依赖或已移除的上下文能力。
+def test_manifest_has_required_capabilities_without_adapter_dependency() -> None:
+    """确保 Manifest 只声明实现所需能力且不绑定适配器插件。
 
     预期 ``dependencies`` 为空、保留主动任务能力但不再申请
-    ``maisaka.context.append``。该测试防止适配器尚未激活时阻止插件加载，
-    或删除重复上下文调用后仍保留多余权限。
+    ``maisaka.context.append``，并申请可信 source 会话反查所需的群聊流列表。
+    该测试防止适配器尚未激活时阻止插件加载、删除重复上下文调用后仍保留
+    多余权限，或测试替身掩盖生产环境的 capability 授权失败。
     """
 
     manifest_path = Path(__file__).parents[1] / "_manifest.json"
@@ -23,6 +24,7 @@ def test_manifest_has_no_adapter_plugin_dependency() -> None:
 
     assert manifest["dependencies"] == []
     assert "maisaka.context.append" not in manifest["capabilities"]
+    assert "chat.get_group_streams" in manifest["capabilities"]
     assert "maisaka.proactive.trigger" in manifest["capabilities"]
 
 

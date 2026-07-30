@@ -203,6 +203,29 @@ class PlannerHistoryParser:
         return observations
 
     @staticmethod
+    def has_tool_result(messages: Any, call_id: str) -> bool:
+        """判断当前 Planner 历史是否包含指定工具调用的结果。
+
+        Args:
+            messages: Planner 请求中的 OpenAI 兼容消息字典列表。
+            call_id: 要查找的非空工具调用 ID。
+
+        Returns:
+            存在角色为 ``tool`` 且 ``tool_call_id`` 精确匹配的消息时返回
+            ``True``；输入格式异常或结果不存在时返回 ``False``。
+        """
+
+        normalized_call_id = str(call_id or "").strip()
+        if not normalized_call_id or not isinstance(messages, list):
+            return False
+        return any(
+            isinstance(message, dict)
+            and str(message.get("role") or "").strip().lower() == "tool"
+            and str(message.get("tool_call_id") or "").strip() == normalized_call_id
+            for message in messages
+        )
+
+    @staticmethod
     def _record_calls(message: dict[str, Any], call_to_message_id: dict[str, str]) -> None:
         """记录一条 assistant 消息中的查看工具调用。
 
