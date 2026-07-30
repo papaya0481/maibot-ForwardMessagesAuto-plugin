@@ -6,6 +6,11 @@
 
 ## [Unreleased]
 
+### Added
+
+- `send.forward` 发送成功但未返回最终目标消息 ID 时记录 warning，明确标识
+  已启用安全 fallback，并附带任务 ID、target 群号和返回类型以便排查。
+
 ## [0.1.19] - 2026-07-29
 
 ### Changed

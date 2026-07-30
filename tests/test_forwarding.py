@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from pathlib import Path
 
 import pytest
@@ -379,6 +380,7 @@ async def test_tool_sends_targets_in_order_and_deduplicates(tmp_path: Path) -> N
 )
 async def test_send_result_without_message_id_keeps_safe_reply_fallback(
     tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
     send_result: bool | dict[str, object],
 ) -> None:
     """验证发送成功但缺少目标消息 ID 时仍沿用安全回复 fallback。
@@ -386,14 +388,17 @@ async def test_send_result_without_message_id_keeps_safe_reply_fallback(
     发送替身分别模拟旧 Host 的布尔成功结果，以及详细结果中没有最终
     ``message_id`` 的成功响应。期望插件继续触发 Planner，但 metadata 不
     包含目标消息 ID，意图要求无法可靠定位时保持沉默，持久化状态也不伪造
-    ID。该测试防止详细结果支持破坏无 ID fallback。
+    ID，并记录包含任务、target 和返回类型的 warning。该测试防止详细结果
+    支持破坏无 ID fallback，或让生产日志无法判断兼容路径是否生效。
 
     Args:
         tmp_path: pytest 提供的隔离状态目录，用于检查兼容状态持久化。
+        caplog: pytest 日志捕获器，用于验证 fallback warning 的级别和内容。
         send_result: pytest 参数化提供的无目标消息 ID 发送成功结果。
     """
 
     plugin = build_plugin(tmp_path, target_groups=["20001"])
+    caplog.set_level(logging.WARNING, logger="test.forward-plugin")
 
     async def legacy_forward(
         messages: list[dict[str, object]],
@@ -436,6 +441,16 @@ async def test_send_result_without_message_id_keeps_safe_reply_fallback(
     state_payload = json.loads((tmp_path / "forward_state.json").read_text(encoding="utf-8"))
     saved_job = next(iter(state_payload["jobs"].values()))
     assert saved_job["target_message_ids"] == {}
+    expected_result_type = type(send_result).__name__
+    assert any(
+        record.levelno == logging.WARNING
+        and record.getMessage()
+        == (
+            "send.forward 未返回目标消息 ID，启用安全 fallback: "
+            f"job={result['job_id']} target=20001 result_type={expected_result_type}"
+        )
+        for record in caplog.records
+    )
     await plugin.on_unload()
 
 

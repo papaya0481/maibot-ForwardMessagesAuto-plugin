@@ -329,7 +329,8 @@ class ForwardDeliveryService:
 
         发送时请求 Host 返回平台最终目标消息 ID，并开启 Maisaka 历史同步。
         新版 Host 返回的 ID 会和 ``SENT`` 阶段原子持久化；旧版 Host 仍可按
-        布尔结果完成发送，但不会产生回复锚点。插件不重复注入源群展开内容。
+        布尔结果完成发送，但不会产生回复锚点。发送成功却缺少 ID 时会记录
+        warning，明确表示后续启用安全 fallback。插件不重复注入源群展开内容。
 
         Args:
             job: 提供发送节点、任务 ID 和来源元数据的任务快照。
@@ -361,6 +362,13 @@ class ForwardDeliveryService:
             )
             return error, None
         target_message_id = CapabilityResult.message_id(result)
+        if target_message_id is None:
+            self._ctx.logger.warning(
+                "send.forward 未返回目标消息 ID，启用安全 fallback: job=%s target=%s result_type=%s",
+                job.job_id,
+                target_group_id,
+                type(result).__name__,
+            )
         await self._state.record_target_sent(job, target_group_id, target_message_id)
         return None, target_message_id
 
