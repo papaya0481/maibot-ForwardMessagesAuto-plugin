@@ -99,6 +99,38 @@ def public_forward_arguments(tool_call: dict[str, Any]) -> dict[str, Any]:
     return arguments
 
 
+async def run_after_response_hooks(
+    plugin: Any,
+    *,
+    session_id: str,
+    response: str,
+    tool_calls: list[dict[str, Any]],
+    **kwargs: Any,
+) -> dict[str, Any]:
+    """按 Host 顺序执行 EARLY 授权与 LATE 自动查看 Hook。
+
+    Args:
+        plugin: 已加载并注入测试上下文的插件实例。
+        session_id: Host 为当前 Planner 轮提供的真实会话 ID。
+        response: 模型生成的文本响应。
+        tool_calls: 模型生成、尚未清洗的序列化工具调用列表。
+        **kwargs: 要在两个 Hook 之间保留的其他响应字段，例如 token 统计。
+
+    Returns:
+        LATE Hook 返回的阻塞继续结果，包含最终响应和工具调用。
+    """
+
+    early_result = await plugin.authorize_forward_request_context(
+        session_id=session_id,
+        response=response,
+        tool_calls=tool_calls,
+        **kwargs,
+    )
+    return await plugin.orchestrate_view_before_forward(
+        **early_result["modified_kwargs"],
+    )
+
+
 @pytest.mark.asyncio
 async def test_unviewed_direct_request_is_replaced_by_single_real_view(tmp_path: Path) -> None:
     """验证未查看的单独转发调用只会先执行一次真实查看。
@@ -115,7 +147,8 @@ async def test_unviewed_direct_request_is_replaced_by_single_real_view(tmp_path:
     await plugin.on_load()
     original_call = build_forward_call()
 
-    result = await plugin.orchestrate_view_before_forward(
+    result = await run_after_response_hooks(
+        plugin,
         session_id="source-stream",
         response="现在转发",
         tool_calls=[deepcopy(original_call)],
@@ -155,7 +188,8 @@ async def test_successful_auto_view_restores_original_request_and_sends(tmp_path
     await plugin.on_load()
     original_call = build_forward_call()
     original_call["function"]["arguments"]["group_id"] = "伪造群号"
-    first = await plugin.orchestrate_view_before_forward(
+    first = await run_after_response_hooks(
+        plugin,
         session_id="source-stream",
         response="现在转发",
         tool_calls=[deepcopy(original_call)],
@@ -262,7 +296,8 @@ async def test_existing_successful_view_keeps_path_a_call_unchanged(tmp_path: Pa
         tool_definitions=[],
     )
 
-    result = await plugin.orchestrate_view_before_forward(
+    result = await run_after_response_hooks(
+        plugin,
         session_id="source-stream",
         response="按路径 A 转发",
         tool_calls=[deepcopy(call)],
@@ -379,6 +414,141 @@ async def test_handler_rejects_missing_and_replayed_authorization(tmp_path: Path
 
 
 @pytest.mark.asyncio
+async def test_early_hook_rotates_stale_authorization(tmp_path: Path) -> None:
+    """验证同一 Planner 会话的新响应轮会撤销旧的未消费凭据。
+
+    第二次 EARLY Hook 即使收到带旧内部字段的历史参数，也必须签发不同的新
+    凭据；旧参数随后应被正式 handler 拒绝，新参数仍能进入查看资格校验。
+    该测试防止模型或历史消息跨响应轮重放尚未消费的授权。
+
+    Args:
+        tmp_path: pytest 提供的临时数据目录，用于隔离一次性授权状态。
+    """
+
+    plugin = build_plugin(tmp_path)
+    await plugin.on_load()
+    first_early = await plugin.authorize_forward_request_context(
+        session_id="source-stream",
+        response="首次请求",
+        tool_calls=[build_forward_call()],
+    )
+    first_arguments = deepcopy(first_early["modified_kwargs"]["tool_calls"][0]["function"]["arguments"])
+    second_call = build_forward_call(call_id="replayed-call")
+    second_call["function"]["arguments"] = deepcopy(first_arguments)
+    second_early = await plugin.authorize_forward_request_context(
+        session_id="source-stream",
+        response="重放请求",
+        tool_calls=[second_call],
+    )
+    second_arguments = second_early["modified_kwargs"]["tool_calls"][0]["function"]["arguments"]
+
+    assert second_arguments[FORWARD_CONTEXT_TOKEN_ARGUMENT] != first_arguments[FORWARD_CONTEXT_TOKEN_ARGUMENT]
+    stale = await plugin.request_cross_group_forward(
+        **first_arguments,
+        platform="qq",
+        group_id="10001",
+        stream_id="source-stream",
+    )
+    current = await plugin.request_cross_group_forward(
+        **second_arguments,
+        platform="qq",
+        group_id="10001",
+        stream_id="source-stream",
+    )
+    assert stale["success"] is False
+    assert "可信的 Planner 会话授权" in stale["content"]
+    assert current["success"] is False
+    assert "当前 Planner 上下文中尚无成功" in current["content"]
+    assert plugin.ctx.events == []
+    await plugin.on_unload()
+
+
+@pytest.mark.asyncio
+async def test_late_hook_does_not_rebind_authorization_after_session_change(tmp_path: Path) -> None:
+    """验证 EARLY 与 LATE 之间的 session 变化不会改绑转发凭据。
+
+    EARLY 在 source 会话签发凭据后，模拟其他 Hook 把 LATE 的 session 改成
+    另一聊天流。LATE 必须删除内部凭据且不触发自动查看，正式 handler 随后
+    安全拒绝。该测试防止异步编排阶段把旧授权重新绑定到错误会话。
+
+    Args:
+        tmp_path: pytest 提供的临时数据目录，用于确认没有查看或投递副作用。
+    """
+
+    plugin = build_plugin(tmp_path)
+    await plugin.on_load()
+    early = await plugin.authorize_forward_request_context(
+        session_id="source-stream",
+        response="源群请求",
+        tool_calls=[build_forward_call()],
+    )
+    late_kwargs = deepcopy(early["modified_kwargs"])
+    late_kwargs["session_id"] = "other-stream"
+
+    late = await plugin.orchestrate_view_before_forward(**late_kwargs)
+    retained = late["modified_kwargs"]["tool_calls"][0]
+    retained_arguments = retained["function"]["arguments"]
+    assert retained["function"]["name"] == FORWARD_TOOL_NAME
+    assert FORWARD_CONTEXT_TOKEN_ARGUMENT not in retained_arguments
+    result = await plugin.request_cross_group_forward(
+        **retained_arguments,
+        platform="qq",
+        group_id="99999",
+        stream_id="other-stream",
+    )
+    assert result["success"] is False
+    assert "可信的 Planner 会话授权" in result["content"]
+    assert plugin.ctx.message.calls == []
+    assert plugin.ctx.events == []
+    await plugin.on_unload()
+
+
+@pytest.mark.asyncio
+async def test_late_hook_does_not_restore_authorization_cleared_by_config_update(
+    tmp_path: Path,
+) -> None:
+    """验证配置更新清除的 EARLY 凭据不会被 LATE 重新签发。
+
+    测试在两个 Hook 之间执行配置热更新，再把原 EARLY 结果交给 LATE。调用
+    必须保留为无授权的转发请求且不触发自动查看，正式 handler 只能拒绝。
+    该测试防止旧配置下的调用跨越新路由或启停边界复活。
+
+    Args:
+        tmp_path: pytest 提供的临时数据目录，用于加载并热更新插件状态。
+    """
+
+    plugin = build_plugin(tmp_path)
+    await plugin.on_load()
+    early = await plugin.authorize_forward_request_context(
+        session_id="source-stream",
+        response="更新前请求",
+        tool_calls=[build_forward_call()],
+    )
+    await plugin.on_config_update(
+        scope="plugin",
+        config_data={},
+        version="test-update",
+    )
+
+    late = await plugin.orchestrate_view_before_forward(**early["modified_kwargs"])
+    retained = late["modified_kwargs"]["tool_calls"][0]
+    retained_arguments = retained["function"]["arguments"]
+    assert retained["function"]["name"] == FORWARD_TOOL_NAME
+    assert FORWARD_CONTEXT_TOKEN_ARGUMENT not in retained_arguments
+    result = await plugin.request_cross_group_forward(
+        **retained_arguments,
+        platform="qq",
+        group_id="10001",
+        stream_id="source-stream",
+    )
+    assert result["success"] is False
+    assert "可信的 Planner 会话授权" in result["content"]
+    assert plugin.ctx.message.calls == []
+    assert plugin.ctx.events == []
+    await plugin.on_unload()
+
+
+@pytest.mark.asyncio
 async def test_auto_view_preflight_rejects_non_source_session(tmp_path: Path) -> None:
     """验证非 source 聊天流不能借直接请求触发系统查看。
 
@@ -406,7 +576,8 @@ async def test_auto_view_preflight_rejects_non_source_session(tmp_path: Path) ->
         }
     )
 
-    result = await plugin.orchestrate_view_before_forward(
+    result = await run_after_response_hooks(
+        plugin,
         session_id="other-stream",
         response="尝试越权转发",
         tool_calls=[call],
@@ -438,7 +609,8 @@ async def test_auto_view_preflight_rejects_invalid_message_and_empty_targets(tmp
     invalid_message_plugin = build_plugin(tmp_path / "invalid")
     invalid_message_plugin.ctx.message.message["raw_message"] = [{"type": "text", "data": "普通消息"}]
     await invalid_message_plugin.on_load()
-    invalid_result = await invalid_message_plugin.orchestrate_view_before_forward(
+    invalid_result = await run_after_response_hooks(
+        invalid_message_plugin,
         session_id="source-stream",
         response="无效消息",
         tool_calls=[build_forward_call()],
@@ -448,7 +620,8 @@ async def test_auto_view_preflight_rejects_invalid_message_and_empty_targets(tmp
 
     no_target_plugin = build_plugin(tmp_path / "no-target", target_groups=[])
     await no_target_plugin.on_load()
-    no_target_result = await no_target_plugin.orchestrate_view_before_forward(
+    no_target_result = await run_after_response_hooks(
+        no_target_plugin,
         session_id="source-stream",
         response="没有目标",
         tool_calls=[build_forward_call()],
@@ -476,7 +649,8 @@ async def test_auto_view_uses_session_mapping_instead_of_message_origin_group(tm
     )
     await plugin.on_load()
 
-    result = await plugin.orchestrate_view_before_forward(
+    result = await run_after_response_hooks(
+        plugin,
         session_id="source-stream",
         response="分享外群转来的内容",
         tool_calls=[build_forward_call()],
@@ -516,7 +690,8 @@ async def test_completed_request_does_not_repeat_auto_view(tmp_path: Path) -> No
     )
     previous_events = list(plugin.ctx.events)
 
-    repeated = await plugin.orchestrate_view_before_forward(
+    repeated = await run_after_response_hooks(
+        plugin,
         session_id="source-stream",
         response="重复请求",
         tool_calls=[build_forward_call()],
@@ -551,7 +726,8 @@ async def test_auto_view_retries_until_existing_fallback_boundary(
 
     plugin = build_plugin(tmp_path)
     await plugin.on_load()
-    first = await plugin.orchestrate_view_before_forward(
+    first = await run_after_response_hooks(
+        plugin,
         session_id="source-stream",
         response="直接请求",
         tool_calls=[build_forward_call(content_summary="自动查看失败后的摘要")],
@@ -627,7 +803,8 @@ async def test_non_retryable_auto_view_failure_never_sends(
 
     plugin = build_plugin(tmp_path)
     await plugin.on_load()
-    first = await plugin.orchestrate_view_before_forward(
+    first = await run_after_response_hooks(
+        plugin,
         session_id="source-stream",
         response="直接请求",
         tool_calls=[build_forward_call()],
@@ -671,7 +848,8 @@ async def test_missing_auto_view_result_abandons_resume(tmp_path: Path) -> None:
 
     plugin = build_plugin(tmp_path)
     await plugin.on_load()
-    await plugin.orchestrate_view_before_forward(
+    await run_after_response_hooks(
+        plugin,
         session_id="source-stream",
         response="直接请求",
         tool_calls=[build_forward_call()],
@@ -708,7 +886,8 @@ async def test_missing_restored_result_releases_session_for_new_request(tmp_path
 
     plugin = build_plugin(tmp_path)
     await plugin.on_load()
-    first = await plugin.orchestrate_view_before_forward(
+    first = await run_after_response_hooks(
+        plugin,
         session_id="source-stream",
         response="首次请求",
         tool_calls=[build_forward_call()],
@@ -732,7 +911,8 @@ async def test_missing_restored_result_releases_session_for_new_request(tmp_path
         messages=[],
         tool_definitions=[],
     )
-    next_request = await plugin.orchestrate_view_before_forward(
+    next_request = await run_after_response_hooks(
+        plugin,
         session_id="source-stream",
         response="新的请求",
         tool_calls=[build_forward_call(call_id="new-request")],
@@ -755,7 +935,8 @@ async def test_config_update_cancels_unfinished_direct_request(tmp_path: Path) -
 
     plugin = build_plugin(tmp_path)
     await plugin.on_load()
-    first = await plugin.orchestrate_view_before_forward(
+    first = await run_after_response_hooks(
+        plugin,
         session_id="source-stream",
         response="更新前请求",
         tool_calls=[build_forward_call()],
@@ -773,7 +954,8 @@ async def test_config_update_cancels_unfinished_direct_request(tmp_path: Path) -
         tool_definitions=[],
     )
 
-    result = await plugin.orchestrate_view_before_forward(
+    result = await run_after_response_hooks(
+        plugin,
         session_id="source-stream",
         response="更新后的普通响应",
         tool_calls=[],
@@ -809,7 +991,8 @@ async def test_multi_tool_response_is_not_reordered(tmp_path: Path) -> None:
     ]
     tool_calls[0]["function"]["arguments"]["group_id"] = "伪造群号"
 
-    result = await plugin.orchestrate_view_before_forward(
+    result = await run_after_response_hooks(
+        plugin,
         session_id="source-stream",
         response="混合调用",
         tool_calls=deepcopy(tool_calls),
@@ -840,7 +1023,8 @@ async def test_auto_view_pending_is_isolated_by_session(tmp_path: Path) -> None:
 
     plugin = build_plugin(tmp_path)
     await plugin.on_load()
-    first = await plugin.orchestrate_view_before_forward(
+    first = await run_after_response_hooks(
+        plugin,
         session_id="source-stream",
         response="A 请求",
         tool_calls=[build_forward_call()],

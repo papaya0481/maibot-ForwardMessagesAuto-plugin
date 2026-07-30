@@ -54,7 +54,7 @@ def load_model(path: str, device: str = "cpu") -> Model:
 完整处理由源群 Planner、插件和目标群 Planner 分工完成：
 
 1. 允许作为 source 的群收到合并转发消息后，MaiBot Planner 必须先调用 `view_forward_message` 查看完整内容，再决定是否调用本插件 `@Tool` 请求转发（路径 A），并显式传入源消息 `msg_id`。
-2. `maisaka.planner.after_response` 的 EARLY blocking Hook 必须无 I/O 地清洗整批转发调用，只保留公开参数，并签发绑定 Host 提供的真实 Planner session 与 `msg_id` 的一次性内部凭据。模型提供的 `platform`、`group_id`、`stream_id`、`chat_id`、target 或内部凭据均不可信。
+2. `maisaka.planner.after_response` 的 EARLY blocking Hook 必须无 I/O 地清洗整批转发调用，只保留公开参数；同一 session 的每个新响应轮先撤销旧凭据，再签发绑定 Host 提供的真实 Planner session 与 `msg_id` 的一次性内部凭据。LATE Hook 只能验证该绑定，不能重新签发或改绑。模型提供的 `platform`、`group_id`、`stream_id`、`chat_id`、target 或内部凭据均不可信。
 3. 路径 A 复用当前 Planner 上下文中已经成功取得的完整 ToolResult，不重复查看。路径 B 仅作为 Planner 偶然漏看路径 A 时的 fallback：转发 Tool 单独出现时，由 LATE `after_response` Hook 在发送前改写成真实 `view_forward_message`；后续 `before_request` 必须精确匹配系统调用 ID 与 `msg_id`，成功或达到既有 fallback 边界后才恢复原转发请求。Planner 可见的 Tool 描述不得把路径 B 作为常规选择。
 4. 路径 B 的可重试故障和首次空内容按既有阈值续轮重新查看；参数、消息类型、终止或无法安全分类的失败由正式处理器拒绝。混合多工具批次不得插入、删除或重排，只进行清洗和凭据签发；未查看的转发调用由正式处理器拒绝。
 5. 正式 Tool handler 必须消费一次性凭据，只使用其中绑定的真实 session 解析可信平台和 source 群号，再校验 source 白名单、消息归属、消息类型和永久防重，然后读取原始转发节点。凭据缺失、未知、错配、已消费，或可信 session 无法解析时必须拒绝，不得回退信任模型上下文字段。

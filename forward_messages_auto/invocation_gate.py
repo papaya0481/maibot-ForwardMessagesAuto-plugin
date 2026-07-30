@@ -26,12 +26,12 @@ class ForwardInvocationGate:
         self._authorizations: OrderedDict[str, tuple[str, str]] = OrderedDict()
 
     def sanitize_and_authorize(self, session_id: str, tool_calls: Any) -> Any:
-        """清洗全部转发调用，并为有效调用签发当前会话凭据。
+        """清洗全部转发调用，并为本轮有效调用签发新会话凭据。
 
         模型提供的 ``platform``、``group_id``、``stream_id`` 等未声明字段
-        会被删除。非转发工具和供应商附加字段保持不变。已有且仍有效的内部
-        凭据会复用，避免同一 Hook 链重复签发；模型自行提供的无效凭据会被
-        替换。非列表输入原样返回。
+        会被删除。非转发工具和供应商附加字段保持不变。每次 EARLY Hook
+        调用都会先撤销该 session 尚未消费的旧凭据，再为当前批次签发新凭据；
+        模型回放历史参数不能复用旧授权。非列表输入原样返回。
 
         Args:
             session_id: ``after_response`` Hook 提供的真实 Planner 会话 ID；
@@ -40,6 +40,56 @@ class ForwardInvocationGate:
 
         Returns:
             清洗后的工具调用深拷贝；非列表输入保持原值。
+        """
+
+        if not isinstance(tool_calls, list):
+            return tool_calls
+
+        normalized_session_id = str(session_id or "").strip()
+        if normalized_session_id:
+            self._revoke_session(normalized_session_id)
+        sanitized_calls = deepcopy(tool_calls)
+        for tool_call in sanitized_calls:
+            if not isinstance(tool_call, dict):
+                continue
+            function = tool_call.get("function")
+            if not isinstance(function, dict):
+                continue
+            if str(function.get("name") or "").strip() != FORWARD_TOOL_NAME:
+                continue
+            arguments = function.get("arguments")
+            if not isinstance(arguments, dict):
+                continue
+
+            sanitized_arguments = {
+                key: deepcopy(arguments[key]) for key in PUBLIC_FORWARD_ARGUMENTS if key in arguments
+            }
+            message_id = str(sanitized_arguments.get("msg_id") or "").strip()
+            if message_id:
+                sanitized_arguments["msg_id"] = message_id
+
+            if normalized_session_id and message_id:
+                sanitized_arguments[FORWARD_CONTEXT_TOKEN_ARGUMENT] = self._issue(
+                    normalized_session_id,
+                    message_id,
+                )
+            function["arguments"] = sanitized_arguments
+        return sanitized_calls
+
+    def sanitize_for_orchestration(self, session_id: str, tool_calls: Any) -> Any:
+        """清洗 LATE Hook 参数，并只保留 EARLY 已签发的有效凭据。
+
+        本方法绝不签发或改绑凭据。两个 Hook 之间若配置更新清空授权、其他
+        Hook 改写 ``session_id``，或调用携带未知凭据，内部字段会被删除，
+        自动查看协调器不会接管，正式 handler 最终按缺少授权拒绝。
+
+        Args:
+            session_id: LATE ``after_response`` Hook 当前收到的 Planner 会话 ID。
+            tool_calls: 上游 Hook 已处理的序列化工具调用列表。
+
+        Returns:
+            清洗后的工具调用深拷贝。只有凭据仍精确绑定当前 session 与
+            ``msg_id`` 时才保留内部字段；非列表输入保持原值。
         """
 
         if not isinstance(tool_calls, list):
@@ -66,16 +116,14 @@ class ForwardInvocationGate:
             if message_id:
                 sanitized_arguments["msg_id"] = message_id
 
-            existing_token = str(arguments.get(FORWARD_CONTEXT_TOKEN_ARGUMENT) or "").strip()
-            if normalized_session_id and message_id:
-                if self._authorizations.get(existing_token) == (
-                    normalized_session_id,
-                    message_id,
-                ):
-                    token = existing_token
-                else:
-                    token = self._issue(normalized_session_id, message_id)
+            token = str(arguments.get(FORWARD_CONTEXT_TOKEN_ARGUMENT) or "").strip()
+            if token and self._authorizations.get(token) == (
+                normalized_session_id,
+                message_id,
+            ):
                 sanitized_arguments[FORWARD_CONTEXT_TOKEN_ARGUMENT] = token
+            elif token:
+                self._authorizations.pop(token, None)
             function["arguments"] = sanitized_arguments
         return sanitized_calls
 
@@ -95,15 +143,17 @@ class ForwardInvocationGate:
             一次性凭据；格式无效时不签发，正式处理器将安全拒绝。
         """
 
-        wrapped_call = {
-            "id": "internal-authorization",
-            "function": {
-                "name": FORWARD_TOOL_NAME,
-                "arguments": deepcopy(arguments),
-            },
-        }
-        authorized_calls = self.sanitize_and_authorize(session_id, [wrapped_call])
-        return authorized_calls[0]["function"]["arguments"]
+        normalized_session_id = str(session_id or "").strip()
+        sanitized_arguments = {key: deepcopy(arguments[key]) for key in PUBLIC_FORWARD_ARGUMENTS if key in arguments}
+        message_id = str(sanitized_arguments.get("msg_id") or "").strip()
+        if message_id:
+            sanitized_arguments["msg_id"] = message_id
+        if normalized_session_id and message_id:
+            sanitized_arguments[FORWARD_CONTEXT_TOKEN_ARGUMENT] = self._issue(
+                normalized_session_id,
+                message_id,
+            )
+        return sanitized_arguments
 
     def consume(self, message_id: str, invocation_context: dict[str, Any]) -> str:
         """消费一次性凭据并返回其绑定的真实 Planner 会话。
@@ -165,3 +215,18 @@ class ForwardInvocationGate:
         while len(self._authorizations) > MAX_PENDING_AUTHORIZATIONS:
             self._authorizations.popitem(last=False)
         return token
+
+    def _revoke_session(self, session_id: str) -> None:
+        """撤销某个 Planner 会话尚未消费的全部旧凭据。
+
+        Args:
+            session_id: 即将开始新一轮 EARLY Hook 授权的 Planner 会话 ID。
+        """
+
+        stale_tokens = [
+            token
+            for token, (authorized_session_id, _) in self._authorizations.items()
+            if authorized_session_id == session_id
+        ]
+        for token in stale_tokens:
+            self._authorizations.pop(token, None)

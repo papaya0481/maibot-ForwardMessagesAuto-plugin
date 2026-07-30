@@ -158,7 +158,7 @@ class ViewBeforeForwardCoordinator:
 
         normalized_session_id = str(session_id or "").strip()
         normalized_response = str(response or "")
-        sanitized_tool_calls = self._invocation_gate.sanitize_and_authorize(
+        sanitized_tool_calls = self._invocation_gate.sanitize_for_orchestration(
             normalized_session_id,
             tool_calls,
         )
@@ -313,10 +313,11 @@ class ViewBeforeForwardCoordinator:
             tool_calls: Host ``after_response`` Hook 提供的序列化调用列表。
 
         Returns:
-            唯一调用为 ``request_cross_group_forward`` 且含非空 ``msg_id``
-            时返回消息 ID、已声明参数和清洗后的原调用；多工具或非法结构
-            返回 ``None``。未声明字段不会进入恢复调用，避免覆盖 Host 注入
-            上下文；原调用的 ID 与供应商附加字段保持不变。
+            唯一调用为 ``request_cross_group_forward``，且含非空 ``msg_id``
+            和 EARLY Hook 有效凭据时，返回消息 ID、已声明参数和清洗后的原
+            调用；多工具、无有效凭据或非法结构返回 ``None``。未声明字段
+            不会进入恢复调用，避免覆盖 Host 注入上下文；原调用的 ID 与
+            供应商附加字段保持不变。
         """
 
         if not isinstance(tool_calls, list) or len(tool_calls) != 1:
@@ -334,7 +335,8 @@ class ViewBeforeForwardCoordinator:
         if not isinstance(arguments, dict):
             return None
         message_id = str(arguments.get("msg_id") or "").strip()
-        if not message_id:
+        authorization_token = str(arguments.get(FORWARD_CONTEXT_TOKEN_ARGUMENT) or "").strip()
+        if not message_id or not authorization_token:
             return None
         copied_arguments = {
             key: deepcopy(arguments[key]) for key in PUBLIC_FORWARD_ARGUMENTS if key != "msg_id" and key in arguments
@@ -345,11 +347,7 @@ class ViewBeforeForwardCoordinator:
             "name": FORWARD_TOOL_NAME,
             "arguments": {
                 **deepcopy(copied_arguments),
-                **(
-                    {FORWARD_CONTEXT_TOKEN_ARGUMENT: str(arguments.get(FORWARD_CONTEXT_TOKEN_ARGUMENT) or "").strip()}
-                    if str(arguments.get(FORWARD_CONTEXT_TOKEN_ARGUMENT) or "").strip()
-                    else {}
-                ),
+                FORWARD_CONTEXT_TOKEN_ARGUMENT: authorization_token,
             },
         }
         return message_id, copied_arguments, sanitized_call

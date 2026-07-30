@@ -273,10 +273,11 @@ class ForwardMessagesAutoPlugin(MaiBotPlugin):
     async def authorize_forward_request_context(self, **kwargs: Any) -> dict[str, Any]:
         """在任何异步预检前清洗参数并签发一次性会话凭据。
 
-        方法不调用 Host capability。即使后续自动查看 Hook 超时或失败，本次
-        修改仍由 Host Hook 链保留；如果本 Hook 自身未执行成功，正式 Tool
-        handler 会因缺少一次性凭据而拒绝原始模型调用，不会信任模型提供的
-        ``platform``、``group_id`` 或 ``stream_id``。
+        方法不调用 Host capability。每个 Planner 响应轮先撤销同一 session
+        尚未消费的旧凭据，再为本轮调用签发新凭据。即使后续自动查看 Hook
+        超时或失败，本次修改仍由 Host Hook 链保留；如果本 Hook 自身未执行
+        成功，正式 Tool handler 会因缺少一次性凭据而拒绝原始模型调用，
+        不会信任模型提供的 ``platform``、``group_id`` 或 ``stream_id``。
 
         Args:
             **kwargs: ``maisaka.planner.after_response`` Hook 参数。读取真实
@@ -312,8 +313,9 @@ class ForwardMessagesAutoPlugin(MaiBotPlugin):
         对单独出现的直接转发请求，当前上下文没有成功查看或允许降级资格时，
         方法将其替换成真实 ``view_forward_message``。下一 Planner 续轮捕获
         精确结果后，再恢复最初的转发参数；同一批不会同时查看和发送。路径 A
-        的调用保持原样。被新消息中断的 Planner 请求不会触发本 Hook，因此
-        尚未消费的普通查看判断提醒会继续保留。
+        的调用保持原样。此 Hook 只验证 EARLY 已签发的凭据，绝不重新签发或
+        改绑。被新消息中断的 Planner 请求不会触发本 Hook，因此尚未消费的
+        普通查看判断提醒会继续保留。
 
         Args:
             **kwargs: ``maisaka.planner.after_response`` Hook 参数。读取
