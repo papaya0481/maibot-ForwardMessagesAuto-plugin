@@ -53,13 +53,13 @@ def load_model(path: str, device: str = "cpu") -> Model:
 
 完整处理由源群 Planner、插件和目标群 Planner 分工完成：
 
-1. 允许作为 source 的群收到合并转发消息后，MaiBot Planner 可以先调用 `view_forward_message` 查看完整内容再请求转发（路径 A），也可以根据当前消息预览直接调用本插件 `@Tool`（路径 B）；两种路径都必须显式传入源消息 `msg_id`。
+1. 允许作为 source 的群收到合并转发消息后，MaiBot Planner 必须先调用 `view_forward_message` 查看完整内容，再决定是否调用本插件 `@Tool` 请求转发（路径 A），并显式传入源消息 `msg_id`。
 2. `maisaka.planner.after_response` 的 EARLY blocking Hook 必须无 I/O 地清洗整批转发调用，只保留公开参数，并签发绑定 Host 提供的真实 Planner session 与 `msg_id` 的一次性内部凭据。模型提供的 `platform`、`group_id`、`stream_id`、`chat_id`、target 或内部凭据均不可信。
-3. 路径 A 复用当前 Planner 上下文中已经成功取得的完整 ToolResult，不重复查看。路径 B 仅在转发 Tool 单独出现时由 LATE `after_response` Hook 在发送前改写成真实 `view_forward_message`；后续 `before_request` 必须精确匹配系统调用 ID 与 `msg_id`，成功或达到既有 fallback 边界后才恢复原转发请求。
+3. 路径 A 复用当前 Planner 上下文中已经成功取得的完整 ToolResult，不重复查看。路径 B 仅作为 Planner 偶然漏看路径 A 时的 fallback：转发 Tool 单独出现时，由 LATE `after_response` Hook 在发送前改写成真实 `view_forward_message`；后续 `before_request` 必须精确匹配系统调用 ID 与 `msg_id`，成功或达到既有 fallback 边界后才恢复原转发请求。Planner 可见的 Tool 描述不得把路径 B 作为常规选择。
 4. 路径 B 的可重试故障和首次空内容按既有阈值续轮重新查看；参数、消息类型、终止或无法安全分类的失败由正式处理器拒绝。混合多工具批次不得插入、删除或重排，只进行清洗和凭据签发；未查看的转发调用由正式处理器拒绝。
 5. 正式 Tool handler 必须消费一次性凭据，只使用其中绑定的真实 session 解析可信平台和 source 群号，再校验 source 白名单、消息归属、消息类型和永久防重，然后读取原始转发节点。凭据缺失、未知、错配、已消费，或可信 session 无法解析时必须拒绝，不得回退信任模型上下文字段。
 6. 插件按照配置顺序，将消息依次发送到允许作为 target 的群；初版不使用 LLM 选择目标群，也不提供黑名单。每个目标群发送成功后按配置决定是否强制触发目标群 Planner，不重复注入 source 群完整内容。
-7. 目标群 Planner 只能在可靠取得目标真实消息 ID 且当前上下文足以判断时自主回复；Host 未返回最终 ID 时必须沿用无法可靠定位即保持沉默的 fallback。当前插件尚不能把 source 完整内容与目标真实消息建立结构化关联，不得宣称目标 Planner 已能准确回复。
+7. 两条 source 路径共用同一 target 投递链。目标群 Planner 在当前 Host 的上下文窗口内可以看到本群近期聊天；热运行时通常只显示真实合并转发的消息前缀和目标 ID，冷启动最多显示前四个节点预览。Planner 可按目标消息自身展示的 `msg_id` 再调用 `view_forward_message`；但插件不强制这次目标侧查看，也尚不能把 source 完整内容与目标真实消息建立结构化关联。Host 未向插件返回最终 ID 或 Planner 无法可靠定位时必须保持沉默，不得宣称目标 Planner 已能准确回复。
 
 源群只能来自 source 白名单，目标群只能来自 target 白名单。一个任务只有一个 source 消息，但可以有多个 target；各 target 按配置顺序发送和触发，不并行发起投递。当前 SDK 无法等待某个目标群 Planner 完整执行结束，因此初版只保证发送和主动任务入队的顺序，不保证不同目标群的 Planner 推理严格串行。
 

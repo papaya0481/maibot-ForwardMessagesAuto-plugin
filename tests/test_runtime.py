@@ -69,9 +69,10 @@ def test_forward_tool_component_is_deferred_and_group_scoped() -> None:
 
     期望组件顶层 ``chat_scope`` 为 ``group``，同时将 ``visibility`` 明确
     声明为 ``deferred``，并为真实顺序投递保留两分钟 RPC 时间；简要描述
-    应提示 Planner 根据 ``msg_id`` 分享有意思、符合人设且值得转发的内容，
-    不暴露内部目标白名单。该测试防止工具重新全量暴露给 Planner、被私聊
-    调用、退回默认短超时，或首次暴露的用途说明发生语义回退。
+    应要求 Planner 先按 ``msg_id`` 查看完整内容，再分享有意思、符合人设且
+    值得转发的内容，不把路径 B 暴露成常规入口，也不暴露内部目标白名单。
+    该测试防止工具重新全量暴露给 Planner、被私聊调用、退回默认短超时，
+    或首次暴露的查看顺序发生语义回退。
     """
 
     plugin = ForwardMessagesAutoPlugin()
@@ -81,8 +82,14 @@ def test_forward_tool_component_is_deferred_and_group_scoped() -> None:
     assert component["metadata"]["visibility"] == "deferred"
     assert component["metadata"]["timeout_ms"] == 120000
     brief_description = component["metadata"]["brief_description"]
-    assert brief_description == ("根据 msg_id，将你觉得有意思、符合人设、值得转发的合并转发消息分享到其他群聊。")
+    assert brief_description == (
+        "先根据 msg_id 调用 view_forward_message 查看完整内容，再将你觉得有意思、符合人设、值得转发的合并转发消息分享到其他群聊。"
+    )
     assert "白名单" not in brief_description
+    detailed_description = component["metadata"]["detailed_description"]
+    assert "必须先使用 view_forward_message(msg_id) 查看该消息的全部内容" in detailed_description
+    assert "不要仅根据消息预览请求转发" in detailed_description
+    assert "可以根据当前消息预览直接请求" not in detailed_description
 
 
 def test_context_authorization_hook_precedes_async_orchestration() -> None:

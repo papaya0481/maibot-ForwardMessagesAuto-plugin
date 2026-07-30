@@ -21,16 +21,16 @@
 
 1. Source 白名单群收到一条合并转发消息；启用
    `trigger_source_planner` 时，插件强制触发一次 source Planner。
-2. Source Planner 可以先调用 `view_forward_message(msg_id)` 查看完整内容后再
-   决定是否分享，也可以依据当前消息预览直接调用 deferred Tool
-   `request_cross_group_forward`；没有合适行动时可以保持沉默。
+2. Source Planner 必须先调用 `view_forward_message(msg_id)` 查看完整内容，再
+   决定是否调用 deferred Tool `request_cross_group_forward`；没有合适行动时
+   可以保持沉默。
 3. `maisaka.planner.after_response` 的 EARLY 阶段对所有转发调用执行无 I/O
    清洗，只保留公开参数，并签发绑定真实 Planner session 与 `msg_id` 的一次性
    内部凭据。
-4. 对单独出现且尚无查看资格的直接请求，LATE 阶段先按真实 session 完成无
-   副作用预检，再把该批次改写为唯一的真实 `view_forward_message`。插件在后续
-   内部轮精确捕获对应 ToolResult，成功或达到既有 fallback 边界后恢复原请求；
-   此时尚未发生物理发送。
+4. 若 Planner 偶然漏看并单独调用转发 Tool，路径 B fallback 的 LATE 阶段先按
+   真实 session 完成无副作用预检，再把该批次改写为唯一的真实
+   `view_forward_message`。插件在后续内部轮精确捕获对应 ToolResult，成功或
+   达到既有 fallback 边界后恢复原请求；此时尚未发生物理发送。
 5. 正式 Tool 处理器必须消费一次性凭据，并按凭据绑定的 session 解析可信
    source 群号，再校验 QQ 群聊、source 白名单、消息归属、消息类型和永久防重，
    从源消息读取原始转发节点。
@@ -71,9 +71,11 @@ Planner 先调用 `view_forward_message`，再请求转发。插件通过 Planne
 就持续有效，不使用 TTL。结果被上下文裁剪后，Planner 必须重新查看。路径 A
 直接进入正式处理器，不重复展开，也不重复进行媒体分析。
 
-#### 路径 B：Planner 未查看便直接请求
+#### 路径 B：Planner 漏看后的 fallback
 
-只有单独出现的 `request_cross_group_forward` 才会进入自动编排。LATE
+Planner 可见的 Tool 描述仍要求先完成路径 A，不把路径 B 提供为可主动选择的
+常规流程。只有模型偶然漏看后单独出现的 `request_cross_group_forward` 才会
+进入自动编排。LATE
 `after_response` Hook 先使用真实 session、消息归属、消息类型、当前 target
 配置以及活动/完成状态做预检；通过后将原调用替换为一个真实
 `view_forward_message`。`before_request` Hook 必须同时匹配系统生成的
@@ -148,6 +150,15 @@ Planner 中断或 RPC 超时连带取消已经开始的发送。
 `maisaka.context.append` 重复写入原始节点或 source 群的完整展开文本，避免
 同一内容在目标 prompt 中重复出现。
 
+路径 A 和路径 B 在完成 source 侧资格检查后使用完全相同的投递服务，因此
+target 侧没有路径差异。在当前检查的 Host 中，目标 Planner 的初始主动请求会
+保留上下文窗口内的目标群近期聊天，但转发内容的表示取决于 runtime 状态：运行
+中的 runtime 直接追加普通 `SessionBackedMessage`，其 LLM 转换当前通常只显示
+消息前缀和目标 ID；冷启动 runtime 从消息库恢复为 `ComplexSessionMessage`，
+最多显示前四个转发节点。真实目标消息自身在历史里携带 `msg_id`；即使
+`send.forward` 没有把该 ID 返回给插件，Planner 在能唯一定位该消息时仍可自行
+调用 `view_forward_message`，并在下一内部轮得到完整展开结果。
+
 插件优先通过 `send.forward(return_details=True)` 取得平台最终目标消息 ID，
 并将它与 `sent` 阶段一起保存，作为目标 Planner 回复这条真实消息的唯一锚点。
 该详细结果目前依赖配套 Host 分支，尚不是官方 Host 的稳定通用契约；Host 未
@@ -155,9 +166,10 @@ Planner 中断或 RPC 超时连带取消已经开始的发送。
 
 无论路径 A 还是路径 B，source 侧完整查看结果当前只用于分享资格和 fallback
 判断。插件不会通过 `maisaka.context.append` 把它重复注入 target，也尚不能把
-它与目标真实消息建立结构化、幂等的关联。因此当前版本不能保证目标 Planner
-已经取得完整内容或能够准确评论；即使 Host 返回目标消息 ID，也只解决回复
-锚点，不等于解决完整内容关联。上游边界见
+它与目标真实消息建立结构化、幂等的关联；主动任务也没有强制目标 Planner 再次
+查看。因此当前版本只能确认目标 Planner 具备查看能力，不能保证它已经取得完整
+内容或能够准确评论。即使 Host 返回目标消息 ID，也只解决回复锚点，不等于解决
+完整内容关联。上游边界见
 [TODO-003](TODO.md#todo-003稳定取得目标消息-id-并关联完整内容)。
 
 当前只保证“发送”和“主动任务入队”按 target 配置顺序发生。SDK 不能等待

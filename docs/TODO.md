@@ -196,8 +196,16 @@ metadata 中移除 source 消息 ID。Planner 仅被允许选择目标群上下�
 
 当前 source 路径 B 会在物理发送前通过真实 `view_forward_message` 取得完整
 ToolResult，成功或达到既有 fallback 边界后才恢复转发请求；路径 A 则复用
-Planner 已经查看的结果。这些内容目前只用于 source 分享资格，不会注入 target
-或声称已经与目标消息关联。
+Planner 已经查看的结果。路径 B 只处理 Planner 偶然漏掉路径 A 的情况，不是
+Planner 可主动选择的常规流程。这些内容目前只用于 source 分享资格，不会注入
+target 或声称已经与目标消息关联。
+
+两条 source 路径最终共用同一 target 投递链。运行中的目标会话会在原有历史后
+追加真实发送消息，冷启动会话则从消息库恢复近期群聊和该消息；目标 Planner
+因此能看到近期本群上下文，但热运行时通常只显示该消息的前缀和目标 ID，冷启动
+最多显示前四个节点预览。Planner 可使用真实消息自身展示的 `msg_id` 再次调用
+`view_forward_message`；但插件没有强制该调用，也没有把 source 完整结果绑定
+过去，所以“具备查看能力”不能等同于“初始主动轮已经获得完整内容”。
 
 #### 上游实施方向
 

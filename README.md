@@ -1,8 +1,9 @@
 # 麦麦自主跨群转发插件
 
 让 MaiBot 在 source 白名单群聊中自主判断一则合并转发是否值得分享。Planner
-既可以先查看完整内容再请求转发，也可以根据当前消息预览直接请求；直接请求会
-在发送前由插件先执行一次真实的 `view_forward_message`。插件随后按照 target
+应先调用 `view_forward_message` 查看完整内容，再决定是否请求转发。若模型偶然
+漏看并直接请求，插件会在发送前补做一次真实查看；这条路径 B 只是路径 A 的
+安全 fallback，不是提供给 Planner 主动选择的常规流程。插件随后按照 target
 白名单顺序发送消息，并按配置触发目标群 Planner。
 
 当前版本为 `0.2.0`，仅面向 SnowLuma Adapter 下的 QQ 群聊进行验证。本版本
@@ -56,11 +57,11 @@ Planner；它只保证主动任务入队，不要求 Planner 一定查看、转�
 
 1. source 白名单群收到合并转发；启用 `trigger_source_planner` 时，插件先
    确认真实消息已经进入 Host 消息库，再强制触发一次本群 Planner。
-2. source 群 Planner 可以先调用内置 `view_forward_message` 查看完整内容后
-   再决定，也可以根据当前预览直接通过 `tool_search` 发现并调用 deferred Tool
-   `request_cross_group_forward`；其内部节点可以最初来自其他群。
-3. 对单独出现且尚未取得查看资格的直接请求，插件在发送前把本轮调用改写成
-   一次真实 `view_forward_message`。插件只接受精确匹配合成调用 ID 与
+2. source 群 Planner 必须先调用内置 `view_forward_message` 查看完整内容，
+   再决定是否通过 `tool_search` 发现并调用 deferred Tool
+   `request_cross_group_forward`；合并转发内部节点可以最初来自其他群。
+3. 若 Planner 偶然漏看并单独调用转发 Tool，路径 B fallback 会在发送前把本轮
+   调用改写成一次真实 `view_forward_message`。插件只接受精确匹配合成调用 ID 与
    `msg_id` 的 ToolResult；成功或达到既有 fallback 边界后，才在后续 Planner
    内部轮恢复原请求。可重试故障和首次空内容会按既有阈值继续查看。
 4. 正式 Tool 处理器消费与真实 Planner session 和 `msg_id` 绑定的一次性凭据，
@@ -68,12 +69,14 @@ Planner；它只保证主动任务入队，不要求 Planner 一定查看、转�
    防重。模型提供的 `platform`、`group_id`、`stream_id` 等上下文字段不参与授权。
 5. 插件按 `msg_id + source stream` 读取原始合并转发节点，按 target 白名单
    顺序执行投递，并等待全部目标产生真实结果后再向源群 Planner 返回。
-6. 每个 target 发送时请求 Host 将带目标群消息 ID 的真实发送消息同步到
-   Maisaka 历史，不重复注入 source 群已经展开的完整内容。
-7. 启用 `trigger_target_planner` 时，插件强制触发目标群 Planner；Planner
-   只有在可靠定位真实目标消息且当前上下文足以判断时才可自主回复，否则保持
-   沉默。主动任务不会把源群消息 ID 暴露为回复目标，当前也不保证已经取得
-   source 完整内容。
+6. 每个 target 发送时请求 Host 将真实合并转发消息同步到 Maisaka 历史，不
+   重复注入 source 群已经展开的完整内容。
+7. 启用 `trigger_target_planner` 时，插件强制触发目标群 Planner。当前 Host 会让
+   该 Planner 保留上下文窗口内的目标群近期聊天；冷启动时能看到新消息的有界
+   预览，热运行时当前通常只看到消息前缀和目标 ID。Planner 可以按目标消息自身
+   展示的 `msg_id` 再调用 `view_forward_message` 查看完整内容。插件目前既不
+   强制这次目标侧查看，也不把 source 查看结果关联到目标消息，因此不能保证
+   完整内容已经进入目标 Planner 的本轮判断。
 
 source 触发通过 `chat.receive.after_process` Hook 在普通回复频率判断前识别
 QQ 合并转发，再等待同一 `source stream + msg_id` 可查询后调用
@@ -99,8 +102,9 @@ discovery 不是授权边界，模型也不能通过伪造 `platform`、`group_i
 立即失效。成功查看后，插件会在紧接着的 Planner 续轮末尾追加一次判断提醒；
 若请求被新消息打断，提醒会保留到 Planner 真正返回为止。
 
-路径 B 中，Planner 未查看便单独调用转发 Tool 时，`after_response` 编排器先
-完成可信预检，再把该批次替换成唯一的真实查看调用。下一内部轮只有在精确
+路径 B 是路径 A 的漏调用 fallback：Planner 未查看便单独调用转发 Tool 时，
+`after_response` 编排器先完成可信预检，再把该批次替换成唯一的真实查看调用。
+Planner 可见的 Tool 描述不会把这条路径作为正常选择。下一内部轮只有在精确
 ToolResult 仍可见时才推进：成功或达到既有 fallback 边界时恢复原请求；可重试
 故障尚未达到阈值或首次空内容时生成新的查看调用；参数、消息类型、终止或无法
 安全分类的失败最终由正式处理器拒绝。混合多工具批次不会被插入、删除或重排；
@@ -141,9 +145,19 @@ sent → planner_queued
 官方 Host 的稳定通用契约；Host 不返回最终 ID 时，插件仍完成转发，但目标
 Planner 无法可靠定位刚发送的真实消息时必须保持沉默。
 
-当前插件也不会把 source 侧取得的完整查看结果与目标群真实消息建立结构化
-关联。因此即使取得目标消息 ID，也不能宣称目标 Planner 已经获得完整内容或能
-准确回复；精确回复仍依赖上游同时提供稳定目标 ID 和幂等内容关联能力。详见
+路径 A 和路径 B 在 source 侧完成查看后会汇入同一条 target 投递链。当前检查的
+Host 对运行中的目标会话会把真实发送消息追加在原有 Maisaka 历史之后；冷启动
+会话会在主动任务入队前从消息库恢复近期历史。因此两条路径都能保留目标群近期
+上下文，但表现不完全相同：热运行时的普通 `SessionBackedMessage` 当前通常只向
+Planner 显示消息前缀和目标 ID，冷启动恢复出的 `ComplexSessionMessage` 最多
+显示前四个转发节点。即使 `send.forward` 没有把最终 `message_id` 返回给插件，
+目标历史中的真实消息本身仍可展示自己的 `msg_id`；Planner 在能唯一定位时具备
+再次调用 `view_forward_message` 的能力。
+
+不过，当前插件不会把 source 侧取得的完整查看结果与目标群真实消息建立结构化
+关联，也不要求目标 Planner 自动再次查看。因此不能宣称目标 Planner 在初始
+主动轮已经获得完整内容，更不能据此保证准确回复；精确回复仍依赖上游提供稳定
+目标 ID 和幂等内容关联能力。详见
 [TODO-003](docs/TODO.md#todo-003稳定取得目标消息-id-并关联完整内容)。
 
 ## 测试
@@ -159,15 +173,17 @@ RUFF_CACHE_DIR=/tmp/maibot-forward-ruff ../../.venv/bin/python -m ruff format --
 人工联调应至少准备一个 source 群和两个 target 群，并验证：
 
 - 路径 A 中，source Planner 先查看完整内容，再决定是否调用转发 Tool；
-- 路径 B 中，单独的未查看请求会在发送前先产生真实查看调用，成功或达到既有
-  fallback 边界后才恢复原请求；
+- 路径 B 只覆盖 Planner 偶然漏看后的单独请求，并会在发送前先产生真实查看
+  调用，成功或达到既有 fallback 边界后才恢复原请求；
 - 混合多工具响应不被重排，缺少可信凭据、非 source 会话或编排超时都不能
   绕过查看与正式处理器校验；
 - 启用 `trigger_source_planner` 后，低回复频率下的 source 合并转发仍会触发
   Planner，但不会自动查看、转发或回复；
 - target 按配置顺序收到合并转发；
-- 目标群 Planner 只能在可靠定位真实目标消息时选择评论，否则保持沉默；当前
-  不把它能依据 source 完整内容准确回复作为验收结论；
+- 两条路径的目标 Planner 都能看到上下文窗口内的目标群近期聊天；冷启动最多
+  自动看到前四个节点预览，热运行时通常只有消息前缀和目标 ID。Planner 可按
+  目标消息自身的 `msg_id` 再查看完整内容；当前不把自动完成目标侧查看或能依据
+  source 完整内容准确回复作为验收结论；
 - 非白名单群无法调用或接收；
 - 同一条消息不会重复发送；
 - 一个 target 失败后，后续 target 仍会继续。
