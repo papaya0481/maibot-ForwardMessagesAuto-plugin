@@ -6,6 +6,37 @@
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-07-30
+
+### Added
+
+- 新增路径 B：Planner 可以根据当前消息预览直接请求转发；当调用单独出现且
+  当前上下文没有查看资格时，插件会在物理发送前先执行真实
+  `view_forward_message`，精确捕获结果，并在成功或达到既有 fallback 边界后
+  恢复原请求。
+- 新增路径 B 的进程内续接、既有查看失败阈值复用、配置更新和卸载清理，以及
+  成功、重试、空内容、不可降级失败、历史缺失和多会话隔离回归测试。
+
+### Changed
+
+- 转发 Tool 同时支持“先查看再请求”的路径 A 和“根据预览直接请求”的路径 B；
+  多工具批次保持原顺序，未查看调用仍由正式处理器安全拒绝。
+- Manifest 新增 `chat.get_group_streams` capability，用于根据可信 Planner
+  session 反查真实 source 群；不再把模型参数或消息记录中的原始来源群当作
+  调用授权依据。
+- 路径 B 当前只解决 source 侧发送前查看，不承诺目标 Planner 准确回复；目标
+  最终消息 ID 的官方契约及完整内容关联仍保留为上游 TODO，无 ID Host 继续
+  使用无法可靠定位即保持沉默的 fallback。
+- 本版本没有修改配置结构、字段、默认值或语义，配置版本继续保持 `0.1.21`。
+
+### Fixed
+
+- 正式 Tool handler 改为只接受 EARLY Hook 签发并绑定真实
+  `session_id + msg_id` 的一次性凭据；模型伪造的 `platform`、`group_id`、
+  `stream_id`、`chat_id` 或 target 字段不再覆盖可信调用上下文。
+- 将无 I/O 的参数清洗与可能执行 capability I/O 的 LATE 自动查看编排拆分；
+  后者超时、异常或被跳过时，原调用仍保持 fail-closed，不能绕过查看直接发送。
+
 ## [0.1.21] - 2026-07-30
 
 ### Added
@@ -265,7 +296,8 @@
 - 新增分阶段持久化状态与幂等恢复，避免后续步骤失败时重复发送。
 - 新增测试，覆盖缓存、白名单、消息节点、顺序投递、失败隔离和去重。
 
-[Unreleased]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.21...HEAD
+[Unreleased]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.21...v0.2.0
 [0.1.21]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.20...v0.1.21
 [0.1.20]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.19...v0.1.20
 [0.1.19]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.18...v0.1.19
