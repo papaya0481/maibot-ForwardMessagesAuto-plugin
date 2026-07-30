@@ -6,10 +6,22 @@
 
 ## [Unreleased]
 
+## [0.1.20] - 2026-07-30
+
 ### Added
 
 - `send.forward` 发送成功但未返回最终目标消息 ID 时记录 warning，明确标识
   已启用安全 fallback，并附带任务 ID、target 群号和返回类型以便排查。
+
+### Changed
+
+- 重整功能设计文档的当前能力与未来展望边界，补充 source Planner 强制触发、
+  直接请求转发、更多消息类型和本地调试统计的后续设计。
+- 明确未来直接请求路径必须在物理发送后由系统自动调用
+  `view_forward_message`，并在触发 target Planner 前准备完整上下文；自动
+  查看沿用现有重试阈值，达到允许降级的条件后才进入标记明确的 fallback。
+- 明确调试统计只能保存在源码工作树之外的本机运行时数据目录，不能随源码、
+  commit、tag 或 release 上传。
 
 ## [0.1.19] - 2026-07-29
 
@@ -238,7 +250,8 @@
 - 新增分阶段持久化状态与幂等恢复，避免后续步骤失败时重复发送。
 - 新增测试，覆盖缓存、白名单、消息节点、顺序投递、失败隔离和去重。
 
-[Unreleased]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.19...HEAD
+[Unreleased]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.20...HEAD
+[0.1.20]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.19...v0.1.20
 [0.1.19]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.18...v0.1.19
 [0.1.18]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.17...v0.1.18
 [0.1.17]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.16...v0.1.17

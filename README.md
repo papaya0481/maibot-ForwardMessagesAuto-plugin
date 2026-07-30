@@ -2,7 +2,7 @@
 
 让 MaiBot 在 source 白名单群聊中看完一则合并转发消息后，自主判断是否值得分享。插件按照 target 白名单顺序发送消息，并在每个目标群中触发 Planner，自主决定是否补充一句看法。
 
-当前版本为 `0.1.19`，仅面向 SnowLuma Adapter 下的 QQ 群聊进行验证。本版本
+当前版本为 `0.1.20`，仅面向 SnowLuma Adapter 下的 QQ 群聊进行验证。本版本
 完整的目标消息 ID 与回复锚点能力基于 MaiBot Host 分支
 `1.1.2-send-forward-result` 开发；该分支从 `upstream/dev@078ee34d` 创建，
 需包含 Host commit `dfaf8e8a`。它属于配套 Host 分支功能，尚不能
