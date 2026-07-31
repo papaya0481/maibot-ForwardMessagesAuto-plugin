@@ -6,6 +6,12 @@
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-07-31
+
+### Changed
+
+- 简化转发 Tool 的参数与描述文案，减少冗余的降级条件说明。
+
 ## [0.2.1] - 2026-07-30
 
 ### Changed
@@ -318,7 +324,8 @@
 - 新增分阶段持久化状态与幂等恢复，避免后续步骤失败时重复发送。
 - 新增测试，覆盖缓存、白名单、消息节点、顺序投递、失败隔离和去重。
 
-[Unreleased]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.21...v0.2.0
 [0.1.21]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.20...v0.1.21
