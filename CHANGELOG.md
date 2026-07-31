@@ -6,6 +6,12 @@
 
 ## [Unreleased]
 
+### Added
+
+- 新增默认关闭的本地 debug 统计：通过 `MAIBOT_FORWARD_DEBUG_STATS` 显式启用，
+  按插件版本和匿名消息键统计 source 唯一合并转发观察数及 Planner 唯一请求数；
+  后台原子写入运行时数据目录，路径或读写异常不会影响正常转发。
+
 ## [0.2.2] - 2026-07-31
 
 ### Changed

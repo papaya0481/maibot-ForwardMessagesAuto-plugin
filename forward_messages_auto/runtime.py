@@ -3,9 +3,14 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
-from .config import ForwardMessagesAutoConfig, GroupIdList
+from .config import PLUGIN_VERSION, ForwardMessagesAutoConfig, GroupIdList
+from .debug_stats import (
+    DEBUG_STATS_FILENAME,
+    DebugForwardStatsStore,
+)
 from .delivery import ForwardDeliveryService
 from .invocation_gate import FORWARD_TOOL_NAME as FORWARD_TOOL_NAME
 from .invocation_gate import ForwardInvocationGate
@@ -44,6 +49,12 @@ class ForwardingRuntime:
         self.streams = GroupStreamRegistry(context)
         self.state = ForwardStateStore(
             context.paths.data_dir / "forward_state.json",
+            context.logger,
+        )
+        self.debug_stats = DebugForwardStatsStore(
+            Path(context.paths.data_dir) / DEBUG_STATS_FILENAME,
+            Path(__file__).resolve().parents[1],
+            PLUGIN_VERSION,
             context.logger,
         )
         self.source_trigger = SourcePlannerTriggerService(
@@ -91,7 +102,8 @@ class ForwardingRuntime:
         该属性主要用于生命周期清理和测试等待，不应由调用方直接增删。
 
         Returns:
-            投递服务维护的 ``asyncio.Task`` 集合。
+            投递与 source 触发服务维护的短生命周期 ``asyncio.Task`` 集合。
+            调试统计的常驻 writer 不包含在内，避免测试等待永不结束。
         """
 
         return self.delivery.background_tasks | self.source_trigger.background_tasks
@@ -118,38 +130,56 @@ class ForwardingRuntime:
     async def start(self) -> None:
         """启动运行时并准备处理 Planner 请求。
 
-        启动顺序为恢复投递服务并加载永久防重状态。目标聊天流只在实际
-        投递时按群号解析，避免插件加载与 Host 聊天管理器初始化之间产生
-        时序依赖。
+        启动顺序为恢复投递服务、加载永久防重状态和 source Planner 触发状态，
+        最后按开发开关初始化本地调试统计。这样后续启动步骤失败时不会遗留统计
+        writer。目标聊天流只在实际投递时按群号解析，避免插件加载与 Host 聊天
+        管理器初始化之间产生时序依赖。
         """
 
         self.delivery.resume()
         await self.state.load()
         await self.source_trigger.start()
+        await self.debug_stats.start()
 
     async def stop(self) -> None:
         """停止后台投递并保存最终状态。
 
-        方法先取消并等待所有后台任务，再持久化阶段快照，保证卸载后没有
-        遗留任务继续调用 Host capability。
+        方法先取消并等待 source 与投递任务，再持久化阶段快照，最后等待
+        调试统计完成已接受事件的原子保存，保证卸载后没有遗留任务继续调用
+        Host capability 或写入统计。
         """
 
         self.cancel_pending_direct_forwards()
-        await self.source_trigger.stop()
-        await self.delivery.stop()
-        await self.state.save()
+        try:
+            await self.source_trigger.stop()
+            await self.delivery.stop()
+            await self.state.save()
+        finally:
+            await self.debug_stats.stop()
 
     def observe_source_message(self, message: Any) -> bool:
-        """把一条入站 Hook 消息交给 source Planner 触发服务筛选。
+        """统计合格 source 消息，再交给 Planner 触发服务独立筛选。
+
+        调试统计只在环境变量显式开启且插件启用时登记 source 白名单中的
+        唯一外部合并转发，并排除已经持久化的插件转发回声；该过程不依赖
+        ``trigger_source_planner``。随后无论统计结果如何，都按原路径调用
+        source 触发服务。
 
         Args:
             message: ``chat.receive.after_process`` 提供的序列化消息载荷。
 
         Returns:
-            消息满足当前配置并新建后台触发任务时返回 ``True``；否则返回
-            ``False``。
+            source 触发服务新建后台 Planner 任务时返回 ``True``；统计是否
+            新增不改变该返回值。
         """
 
+        config = self.config
+        if config.plugin.enabled:
+            self.debug_stats.record_source_message(
+                message,
+                GroupIdList.normalize(config.routing.source_groups),
+                self.state.is_forwarded_target_message,
+            )
         return self.source_trigger.observe(message)
 
     def capture_view_results(self, session_id: str, messages: Any) -> list[str]:
@@ -216,9 +246,11 @@ class ForwardingRuntime:
     def authorize_forward_calls(self, session_id: str, tool_calls: Any) -> tuple[Any, str]:
         """清洗转发参数并绑定真实 ``after_response`` 会话。
 
-        该步骤不执行 capability I/O，供 EARLY Hook 在自动查看编排前独立
-        完成。即使后续 Hook 超时，正式 Tool handler 也只接受这里签发的
-        一次性凭据；缺少凭据的原始模型调用会被拒绝。
+        该步骤不执行 capability 或文件 I/O，供 EARLY Hook 在自动查看编排前
+        独立完成。即使后续 Hook 超时，正式 Tool handler 也只接受这里签发的
+        一次性凭据；缺少凭据的原始模型调用会被拒绝。显式开启调试统计时，
+        方法还会把已观察消息的原始 Planner 请求加入内存去重集合；磁盘保存
+        由常驻 worker 在 Hook 让出控制后执行。
 
         Args:
             session_id: Host Hook 提供的真实 Planner 会话 ID。
@@ -229,7 +261,12 @@ class ForwardingRuntime:
             LATE Hook 验证本次分发链的随机标记。
         """
 
-        return self.invocation_gate.sanitize_and_authorize(session_id, tool_calls)
+        sanitized_calls, authorization_round = self.invocation_gate.sanitize_and_authorize(
+            session_id,
+            tool_calls,
+        )
+        self.debug_stats.record_requested_calls(session_id, sanitized_calls)
+        return sanitized_calls, authorization_round
 
     def cancel_pending_direct_forwards(self) -> None:
         """取消尚未发送的路径 B 续接请求。

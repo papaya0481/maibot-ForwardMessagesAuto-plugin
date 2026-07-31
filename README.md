@@ -53,6 +53,30 @@ Planner；它只保证主动任务入队，不要求 Planner 一定查看、转�
 未闭合数组等无效 TOML，插件会继续使用最近一次有效配置，等待下一次合法
 保存；如果文件最终仍不合法，新值不会生效，请根据日志修正语法。
 
+## 本地调试统计
+
+开发调试时，可在启动 MaiBot 前显式设置环境变量：
+
+```bash
+export MAIBOT_FORWARD_DEBUG_STATS=1
+```
+
+插件重载后，会统计当前插件版本内 source 白名单群观察到的唯一外部 QQ 合并
+转发数，以及其中 Planner 实际发起转发请求的唯一消息数，并在 debug 日志中
+以 `发起转发数/观察总数（比例）` 展示。该统计独立于
+`trigger_source_planner`；重复 Hook、重复 Tool 调用和路径 B 的系统恢复调用
+不会重复计数。
+
+开关默认关闭且不进入 `config.toml`，因此不会改变配置版本。统计只写入 MaiBot
+为插件分配的运行时数据目录：
+`context.paths.data_dir/debug_forward_stats.local.json`。文件按插件版本分桶，
+只保存聚合整数和 SHA-256 匿名去重键，不保存原始 stream、消息 ID、群号、正文
+或媒体。路径落入插件源码树、文件损坏或读写失败时，插件只记录 warning 并跳过
+统计，不影响正常转发，也不会在仓库中创建替代文件。
+
+关闭时删除该环境变量并重载插件即可。真实统计文件只属于本机调试数据，不应
+提交、打 tag、打包发布或上传到 GitHub。
+
 ## 工作流程
 
 1. source 白名单群收到合并转发；启用 `trigger_source_planner` 时，插件先
