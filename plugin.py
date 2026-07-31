@@ -354,14 +354,13 @@ class ForwardMessagesAutoPlugin(MaiBotPlugin):
     @Tool(
         FORWARD_TOOL_NAME,
         brief_description=(
-            "先根据 msg_id 调用 view_forward_message 查看完整内容，再将你觉得有意思、符合人设、值得转发的合并转发消息分享到其他群聊。"
+            "根据 msg_id，将已经通过view_forward_message完整查看，且你觉得有意思、符合人设、值得转发的合并转发消息分享到其他群聊。"
         ),
         detailed_description=(
-            "调用本工具前，必须先使用 view_forward_message(msg_id) 查看该消息的全部内容，"
+            "调用本工具前，先使用 view_forward_messagemsg_id 查看该消息的全部内容，"
             "并仅在看完后判断它有意思、符合人设且值得分享时调用；不要仅根据消息预览请求转发。"
             "目标群由插件配置决定，禁止自行指定目标群。"
-            "content_summary 只在连续可重试故障达到配置阈值或连续两次返回空内容时降级使用。"
-            "工具会等待全部目标群的真实处理结果；只有 success=true 且 status=succeeded 才表示完整成功。"
+            "content_summary 只在连续重试达到阈值或返回空内容时降级使用。"
         ),
         parameters=[
             ToolParameterInfo(
