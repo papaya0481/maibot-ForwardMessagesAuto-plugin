@@ -6,11 +6,18 @@
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-07-31
+
 ### Added
 
 - 新增默认关闭的本地 debug 统计：通过 `MAIBOT_FORWARD_DEBUG_STATS` 显式启用，
   按插件版本和匿名消息键统计 source 唯一合并转发观察数及 Planner 唯一请求数；
   后台原子写入运行时数据目录，路径或读写异常不会影响正常转发。
+
+### Changed
+
+- 调整 source 白名单群收到合并转发后的 Planner 主动任务提示，明确源消息 ID，
+  并交由 Planner 结合当前上下文与人设自主决定是否查看或采取后续行动。
 
 ## [0.2.2] - 2026-07-31
 
@@ -330,7 +337,8 @@
 - 新增分阶段持久化状态与幂等恢复，避免后续步骤失败时重复发送。
 - 新增测试，覆盖缓存、白名单、消息节点、顺序投递、失败隔离和去重。
 
-[Unreleased]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.2.2...HEAD
+[Unreleased]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.2.3...HEAD
+[0.2.3]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.2.1...v0.2.2
 [0.2.1]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.1.21...v0.2.0
