@@ -6,6 +6,11 @@
 
 ## [Unreleased]
 
+### Changed
+
+- 将插件内部实现按 `core`、`source`、`target` 三个领域重组，并同步按职责
+  拆分测试；运行时行为、配置、持久化格式和 Planner 可见内容保持不变。
+
 ## [0.2.5] - 2026-07-31
 
 ### Changed

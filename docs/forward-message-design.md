@@ -238,6 +238,24 @@ worker 在 Hook 让出控制后串行写入同目录临时文件，再原子替�
 Planner 触发或卸载。真实计数只属于本机运行时数据，不能进入 commit、tag、
 release 或以其他方式上传到 GitHub。
 
+### 2.9 内部模块边界
+
+插件内部实现按 `core`、`source`、`target` 三个领域组织：
+
+- `core` 保存 source 与 target 共用的 capability 结果解析、合并转发消息解析、
+  任务及投递模型、永久状态和聊天流映射，不依赖外层领域；
+- `source` 负责入站消息识别、source Planner 触发、查看历史与资格、路径 B
+  编排以及一次性调用授权，只依赖 `core` 和配置；
+- `target` 负责按配置顺序发送、阶段恢复和目标 Planner 入队，只依赖 `core`
+  和配置；
+- 顶层 `request.py` 负责把可信 source 请求交给 target 投递，`runtime.py`
+  负责生命周期和依赖装配。跨领域协调不得下沉到 `core`、`source` 或
+  `target`。
+
+因此内部依赖方向固定为
+`plugin.py -> runtime/request -> source + target -> core`。测试目录镜像相同
+职责边界，并通过架构回归测试阻止 `core` 向外依赖或 source、target 相互导入。
+
 ## 3. 未来展望（尚未实现）
 
 ### 3.1 将 source 完整内容关联到目标真实消息
