@@ -379,7 +379,7 @@ class ForwardMessagesAutoPlugin(MaiBotPlugin):
             ToolParameterInfo(
                 name="content_summary",
                 param_type=ToolParamType.STRING,
-                description=("对当前已知内容的忠实摘要，仅在连续可重试故障达到配置阈值或连续两次返回空内容时降级使用"),
+                description=("对当前已知内容的摘要，仅在连续重试达到阈值或返回空内容时降级使用"),
                 required=False,
                 default="",
             ),
