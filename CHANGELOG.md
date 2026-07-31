@@ -6,6 +6,15 @@
 
 ## [Unreleased]
 
+## [0.2.5] - 2026-07-31
+
+### Changed
+
+- 明确目标群 Planner 主动任务中的目标消息 ID 即为 `reply` 工具使用的
+  `msg_id`，并补充工具调用表述。
+- 将后续消息类型扩展的规划重点调整为 QQ 小程序及内容平台分享卡片，同时明确
+  当前版本仍只支持合并转发。
+
 ## [0.2.4] - 2026-07-31
 
 ### Changed
@@ -344,7 +353,8 @@
 - 新增分阶段持久化状态与幂等恢复，避免后续步骤失败时重复发送。
 - 新增测试，覆盖缓存、白名单、消息节点、顺序投递、失败隔离和去重。
 
-[Unreleased]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.2.4...HEAD
+[Unreleased]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.2.5...HEAD
+[0.2.5]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.2.4...v0.2.5
 [0.2.4]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.2.2...v0.2.3
 [0.2.2]: https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/compare/v0.2.1...v0.2.2
