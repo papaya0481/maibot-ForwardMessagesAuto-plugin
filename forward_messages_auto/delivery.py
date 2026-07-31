@@ -400,12 +400,12 @@ class ForwardDeliveryService:
 
         if target_message_id:
             reply_instruction = (
-                f"这则真实消息的目标消息 ID 是 {target_message_id}；如果决定发表看法，调用 reply 时只能使用这个 ID。"
+                f"这则真实消息的目标消息 ID (msg_id) 是 {target_message_id}；如果决定发表看法，调用 reply 工具进行回复时只能使用这个 ID。"
             )
         else:
             reply_instruction = (
                 "如果当前上下文中能可靠定位由你刚刚实际发送的那则合并转发消息，并且你决定发表看法，"
-                "调用 reply 时只能选择该真实消息；不要使用源群消息 ID。无法可靠定位时请保持沉默。"
+                "调用 reply 工具进行回复时只能选择该真实消息的 msg_id。无法可靠定位时请保持沉默。"
             )
         intent = (
             "你刚刚把一则来自其他群聊的合并转发分享到了本群。"
