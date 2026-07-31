@@ -584,10 +584,7 @@ async def test_legacy_route_jobs_migrate_and_preserve_highest_target_stage(
         "job_id": result["job_id"],
         "target_message_id": "persisted-target-b",
     }
-    assert (
-        "目标消息 ID (msg_id) 是 persisted-target-b"
-        in plugin.ctx.maisaka.proactive.intents_by_stream["target-b"]
-    )
+    assert "目标消息 ID (msg_id) 是 persisted-target-b" in plugin.ctx.maisaka.proactive.intents_by_stream["target-b"]
     await plugin.on_unload()
     saved_payload = json.loads((tmp_path / "forward_state.json").read_text(encoding="utf-8"))
     assert saved_payload["version"] == 3

@@ -399,9 +399,7 @@ class ForwardDeliveryService:
         """
 
         if target_message_id:
-            reply_instruction = (
-                f"这则真实消息的目标消息 ID (msg_id) 是 {target_message_id}；如果决定发表看法，调用 reply 工具进行回复时只能使用这个 ID。"
-            )
+            reply_instruction = f"这则真实消息的目标消息 ID (msg_id) 是 {target_message_id}；如果决定发表看法，调用 reply 工具进行回复时只能使用这个 ID。"
         else:
             reply_instruction = (
                 "如果当前上下文中能可靠定位由你刚刚实际发送的那则合并转发消息，并且你决定发表看法，"
