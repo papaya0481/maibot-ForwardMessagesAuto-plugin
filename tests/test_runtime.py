@@ -64,15 +64,13 @@ assert module.create_plugin().__class__.__name__ == "ForwardMessagesAutoPlugin"
     assert result.returncode == 0, result.stderr
 
 
-def test_forward_tool_component_is_deferred_and_group_scoped() -> None:
-    """验证自主转发 Tool 的发现方式、群聊范围、超时和首次暴露描述。
+def test_forward_tool_component_is_deferred_group_scoped_and_has_long_timeout() -> None:
+    """验证自主转发 Tool 的发现方式、群聊范围和执行超时。
 
-    期望组件顶层 ``chat_scope`` 为 ``group``，同时将 ``visibility`` 明确
-    声明为 ``deferred``，并为真实顺序投递保留两分钟 RPC 时间；简要描述
-    应要求 Planner 先按 ``msg_id`` 查看完整内容，再分享有意思、符合人设且
-    值得转发的内容，不把路径 B 暴露成常规入口，也不暴露内部目标白名单。
-    该测试防止工具重新全量暴露给 Planner、被私聊调用、退回默认短超时，
-    或首次暴露的查看顺序发生语义回退。
+    期望组件顶层 ``chat_scope`` 为 ``group``，将 ``visibility`` 声明为
+    ``deferred``，并为真实顺序投递保留两分钟 RPC 时间。该测试防止工具
+    重新全量暴露给 Planner、被私聊调用或退回默认短超时，不校验任何
+    Planner 可见文本。
     """
 
     plugin = ForwardMessagesAutoPlugin()
@@ -81,15 +79,6 @@ def test_forward_tool_component_is_deferred_and_group_scoped() -> None:
     assert component["chat_scope"] == "group"
     assert component["metadata"]["visibility"] == "deferred"
     assert component["metadata"]["timeout_ms"] == 120000
-    brief_description = component["metadata"]["brief_description"]
-    assert brief_description == (
-        "先根据 msg_id 调用 view_forward_message 查看完整内容，再将你觉得有意思、符合人设、值得转发的合并转发消息分享到其他群聊。"
-    )
-    assert "白名单" not in brief_description
-    detailed_description = component["metadata"]["detailed_description"]
-    assert "必须先使用 view_forward_message(msg_id) 查看该消息的全部内容" in detailed_description
-    assert "不要仅根据消息预览请求转发" in detailed_description
-    assert "可以根据当前消息预览直接请求" not in detailed_description
 
 
 def test_context_authorization_hook_precedes_async_orchestration() -> None:

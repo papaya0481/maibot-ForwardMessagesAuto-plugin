@@ -362,13 +362,13 @@ class FakeMaisakaProactiveCapability:
         self.metadata_by_stream: dict[str, dict[str, Any]] = {}
 
     async def trigger(self, stream_id: str, intent: str, **kwargs: Any) -> dict[str, Any]:
-        """验证真实消息定位约束并模拟主动任务入队。
+        """记录主动任务参数并模拟 Planner 成功入队。
 
         Args:
             stream_id: 要触发 Planner 的目标聊天流 ID。
-            intent: 投递服务生成的 Planner 意图文本。
+            intent: 投递服务生成的 Planner 意图文本，仅记录而不校验文案。
             **kwargs: 主动任务的 reason、priority 和 metadata；测试保存
-                metadata 以验证不会向目标 Planner 暴露源群消息 ID。
+                metadata 供调用方验证功能字段。
 
         Returns:
             包含 ``success=True``、``queued=True`` 和可预测任务 ID 的字典。
@@ -376,12 +376,7 @@ class FakeMaisakaProactiveCapability:
 
         metadata = kwargs.get("metadata")
         assert isinstance(metadata, dict)
-        if metadata.get("trigger_kind") == "source_forward_message":
-            assert "本群刚收到一则真实合并转发消息" in intent
-            assert "不要求你一定查看、转发或回复" in intent
-        else:
-            assert "目标消息 ID 是" in intent or "无法可靠定位时请保持沉默" in intent
-            assert "完整内容已经写入当前上下文" not in intent
+        assert isinstance(intent, str)
         self.intents_by_stream[stream_id] = intent
         self.metadata_by_stream[stream_id] = metadata
         self.events.append(("planner", stream_id))

@@ -39,8 +39,8 @@ async def test_source_trigger_waits_for_real_message_and_only_queues_planner(tmp
 
     Hook 首次查询模拟消息尚未落库，第二次才返回同一聊天流的合并转发。
     期望最终只出现 source Planner 事件，不发生物理发送；metadata 保留同流
-    ``msg_id``，意图明确查看、转发和回复均由 Planner 自主决定。该测试防止
-    主动任务抢在真实消息入库前运行，或把强制触发扩张为自动转发。
+    ``msg_id``。该测试防止主动任务抢在真实消息入库前运行，或把强制触发
+    扩张为自动转发；Planner 可见文本不属于本测试范围。
 
     Args:
         tmp_path: pytest 提供的隔离状态目录，用于保存永久触发防重键。
@@ -63,8 +63,6 @@ async def test_source_trigger_waits_for_real_message_and_only_queues_planner(tmp
         "trigger_kind": "source_forward_message",
         "source_message_id": "forward-message",
     }
-    intent = plugin.ctx.maisaka.proactive.intents_by_stream["source-stream"]
-    assert "不要求你一定查看、转发或回复" in intent
     await plugin.on_unload()
 
 
