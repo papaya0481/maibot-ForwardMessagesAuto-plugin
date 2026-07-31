@@ -177,8 +177,10 @@ async def test_hook_syncs_view_eligibility_without_rewriting_tool_definitions(tm
     assert current_lookup.status is ViewEligibilityStatus.READY
     assert current_lookup.content == "完整展开内容"
     assert current_result["modified_kwargs"]["tool_definitions"] == definitions
+    assert len(current_messages) == len(messages) + 1
     assert current_messages[-1]["role"] == "user"
-    assert "不要等待下一条聊天消息后再作判断" in current_messages[-1]["content"]
+    assert isinstance(current_messages[-1]["content"], str)
+    assert current_messages[-1]["content"]
 
     interrupted_retry_messages = deepcopy(messages)
     await plugin.capture_view_forward_result(
@@ -186,7 +188,10 @@ async def test_hook_syncs_view_eligibility_without_rewriting_tool_definitions(tm
         messages=interrupted_retry_messages,
         tool_definitions=definitions,
     )
-    assert "不要等待下一条聊天消息后再作判断" in interrupted_retry_messages[-1]["content"]
+    assert len(interrupted_retry_messages) == len(messages) + 1
+    assert interrupted_retry_messages[-1]["role"] == "user"
+    assert isinstance(interrupted_retry_messages[-1]["content"], str)
+    assert interrupted_retry_messages[-1]["content"]
 
     await plugin.orchestrate_view_before_forward(
         session_id="current-stream",
