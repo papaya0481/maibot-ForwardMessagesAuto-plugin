@@ -361,8 +361,8 @@ async def test_tool_sends_targets_in_order_and_deduplicates(tmp_path: Path) -> N
     }
     assert "source_message_id" not in plugin.ctx.maisaka.proactive.metadata_by_stream["target-a"]
     target_intent = plugin.ctx.maisaka.proactive.intents_by_stream["target-a"]
-    assert "目标消息 ID 是 sent-target-a" in target_intent
-    assert "调用 reply 时只能使用这个 ID" in target_intent
+    assert "目标消息 ID (msg_id) 是 sent-target-a" in target_intent
+    assert "调用 reply 工具进行回复时只能使用这个 ID" in target_intent
     assert "完整内容已经写入当前上下文" not in target_intent
     assert plugin.ctx.message.calls == [("forward-message", "source-stream", True)]
 
@@ -584,7 +584,10 @@ async def test_legacy_route_jobs_migrate_and_preserve_highest_target_stage(
         "job_id": result["job_id"],
         "target_message_id": "persisted-target-b",
     }
-    assert "目标消息 ID 是 persisted-target-b" in plugin.ctx.maisaka.proactive.intents_by_stream["target-b"]
+    assert (
+        "目标消息 ID (msg_id) 是 persisted-target-b"
+        in plugin.ctx.maisaka.proactive.intents_by_stream["target-b"]
+    )
     await plugin.on_unload()
     saved_payload = json.loads((tmp_path / "forward_state.json").read_text(encoding="utf-8"))
     assert saved_payload["version"] == 3
