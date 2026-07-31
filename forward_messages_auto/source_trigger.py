@@ -166,8 +166,7 @@ class SourcePlannerTriggerService:
                 observation.stream_id,
                 intent=(
                     f"本群刚收到一则真实合并转发消息，消息 ID 是 {observation.message_id}。"
-                    "请结合本群当前上下文和你的人设，自主决定是否查看、判断或采取后续行动；"
-                    "本次触发不要求你一定查看、转发或回复。"
+                    "请结合本群当前上下文和你的人设，自主决定是否查看、判断或采取后续行动，如转发分享。"
                 ),
                 reason="source 白名单群收到合并转发消息",
                 priority="normal",
