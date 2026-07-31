@@ -1,30 +1,12 @@
-"""合并转发与 Planner 查看结果解析的回归测试。"""
+"""source Planner 查看历史解析的回归测试。"""
 
 from __future__ import annotations
 
 import pytest
 
-from forward_messages_auto.core.messages import ForwardMessageParser
 from forward_messages_auto.source.history import PlannerHistoryParser
 from forward_messages_auto.source.models import ViewObservationKind
 from forward_messages_auto.source.view_state import ViewEligibilityStore
-from tests.support import build_forward_message
-
-
-def test_extract_forward_payload_preserves_nodes_and_binary_data() -> None:
-    """验证合并转发解析同时生成上下文段和发送节点。
-
-    期望解析结果保留 ``forward`` 类型、节点昵称以及图片
-    ``binary_data_base64``。该测试防止消息规范化过程中丢失发送者信息或
-    媒体二进制数据，导致目标群收到不完整内容。
-    """
-
-    payload = ForwardMessageParser.extract(build_forward_message())
-    assert payload is not None
-    segment, messages = payload
-    assert segment["type"] == "forward"
-    assert messages[0]["nickname"] == "群友甲"
-    assert messages[0]["segments"][1]["binary_data_base64"] == "aW1hZ2U="
 
 
 def test_extract_view_forward_results_pairs_tool_call_and_result() -> None:
