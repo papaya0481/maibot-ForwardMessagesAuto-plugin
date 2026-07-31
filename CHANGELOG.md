@@ -6,6 +6,8 @@
 
 ## [Unreleased]
 
+## [0.2.6] - 2026-08-01
+
 ### Changed
 
 - 将插件内部实现按 `core`、`source`、`target` 三个领域重组，并同步按职责
