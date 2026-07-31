@@ -8,6 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+from forward_messages_auto.config import PLUGIN_VERSION
 from forward_messages_auto.invocation_gate import FORWARD_TOOL_NAME
 from forward_messages_auto.models import ViewObservationKind
 from forward_messages_auto.parsing import (
@@ -444,7 +445,7 @@ def build_plugin(
         {
             "plugin": {
                 "enabled": True,
-                "version": "0.2.1",
+                "version": PLUGIN_VERSION,
                 "config_version": "0.1.21",
             },
             "routing": {
