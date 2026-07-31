@@ -12,11 +12,11 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from .invocation_gate import (
+from .source.authorization import (
     FORWARD_CONTEXT_TOKEN_ARGUMENT,
     FORWARD_TOOL_NAME,
 )
-from .source_message import SourceForwardMessageParser
+from .source.message import SourceForwardMessageParser
 
 DEBUG_STATS_ENV_VAR = "MAIBOT_FORWARD_DEBUG_STATS"
 DEBUG_STATS_FILENAME = "debug_forward_stats.local.json"

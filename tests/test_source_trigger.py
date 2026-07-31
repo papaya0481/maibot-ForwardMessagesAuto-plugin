@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from forward_messages_auto.models import ForwardJob
+from forward_messages_auto.core.models import ForwardJob
 from tests.support import (
     FakeDelayedMessageCapability,
     build_forward_message,

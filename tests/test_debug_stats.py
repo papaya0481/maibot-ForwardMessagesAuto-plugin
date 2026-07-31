@@ -15,11 +15,11 @@ from forward_messages_auto.debug_stats import (
     DEBUG_STATS_FILENAME,
     DebugForwardStatsStore,
 )
-from forward_messages_auto.invocation_gate import (
+from forward_messages_auto.source.authorization import (
     FORWARD_CONTEXT_TOKEN_ARGUMENT,
     FORWARD_TOOL_NAME,
 )
-from forward_messages_auto.models import ForwardJob
+from forward_messages_auto.core.models import ForwardJob
 from tests.support import build_forward_message, build_plugin
 
 

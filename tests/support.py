@@ -9,9 +9,9 @@ from types import SimpleNamespace
 from typing import Any
 
 from forward_messages_auto.config import PLUGIN_VERSION
-from forward_messages_auto.invocation_gate import FORWARD_TOOL_NAME
-from forward_messages_auto.models import ViewObservationKind
-from forward_messages_auto.parsing import (
+from forward_messages_auto.source.authorization import FORWARD_TOOL_NAME
+from forward_messages_auto.source.models import ViewObservationKind
+from forward_messages_auto.source.history import (
     ViewToolObservation,
 )
 from plugin import ForwardMessagesAutoPlugin

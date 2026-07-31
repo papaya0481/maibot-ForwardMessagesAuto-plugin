@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from .parsing import ForwardMessageParser
+from ..core.messages import ForwardMessageParser
 
 
 @dataclass(frozen=True, slots=True)

@@ -8,12 +8,12 @@ from typing import Any
 
 import pytest
 
-from forward_messages_auto.invocation_gate import (
+from forward_messages_auto.source.authorization import (
     FORWARD_AUTHORIZATION_ROUND_KWARG,
     FORWARD_CONTEXT_TOKEN_ARGUMENT,
 )
-from forward_messages_auto.parsing import VIEW_FORWARD_TOOL_NAME
-from forward_messages_auto.view_before_forward import FORWARD_TOOL_NAME
+from forward_messages_auto.source.history import VIEW_FORWARD_TOOL_NAME
+from forward_messages_auto.source.authorization import FORWARD_TOOL_NAME
 from tests.support import (
     build_forward_message,
     build_plugin,

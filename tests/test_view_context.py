@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from forward_messages_auto.models import ViewEligibilityStatus, ViewObservationKind
-from forward_messages_auto.parsing import ViewToolObservation
-from forward_messages_auto.view_context import ViewEligibilityStore
+from forward_messages_auto.source.history import ViewToolObservation
+from forward_messages_auto.source.models import ViewEligibilityStatus, ViewObservationKind
+from forward_messages_auto.source.view_state import ViewEligibilityStore
 
 
 def test_view_eligibility_follows_current_context_and_classifies_failures() -> None:

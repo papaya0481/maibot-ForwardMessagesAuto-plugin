@@ -9,7 +9,7 @@ from .models import (
     ViewFailureState,
     ViewObservationKind,
 )
-from .parsing import ViewToolObservation
+from .history import ViewToolObservation
 
 
 class ViewEligibilityStore:

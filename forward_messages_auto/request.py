@@ -7,19 +7,20 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from .config import ForwardMessagesAutoConfig, GroupIdList
-from .delivery import ForwardDeliveryService
-from .models import (
+from .core.messages import ForwardMessageParser
+from .core.models import (
     ForwardDeliveryReport,
     ForwardJob,
     TargetStage,
+)
+from .core.state import ForwardStateStore
+from .source.models import (
     ViewEligibilityStatus,
     ViewObservationKind,
 )
-from .parsing import ForwardMessageParser
-from .state import ForwardStateStore
-from .view_context import ViewEligibilityStore
-
-EMPTY_CONTENT_FALLBACK_THRESHOLD = 2
+from .source.view_policy import EMPTY_CONTENT_FALLBACK_THRESHOLD
+from .source.view_state import ViewEligibilityStore
+from .target.delivery import ForwardDeliveryService
 
 
 class ForwardRequestService:

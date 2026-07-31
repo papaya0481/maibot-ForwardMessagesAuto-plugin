@@ -8,17 +8,17 @@ from dataclasses import dataclass
 from typing import Any
 from uuid import uuid4
 
-from .config import ForwardMessagesAutoConfig
-from .invocation_gate import (
+from ..config import ForwardMessagesAutoConfig
+from .authorization import (
     FORWARD_CONTEXT_TOKEN_ARGUMENT,
     FORWARD_TOOL_NAME,
     PUBLIC_FORWARD_ARGUMENTS,
     ForwardInvocationGate,
 )
-from .models import ViewEligibilityLookup, ViewEligibilityStatus, ViewObservationKind
-from .parsing import PlannerHistoryParser, VIEW_FORWARD_TOOL_NAME, ViewToolObservation
-from .request import EMPTY_CONTENT_FALLBACK_THRESHOLD
-from .view_context import ViewEligibilityStore
+from .models import ViewEligibilityLookup
+from .history import PlannerHistoryParser, VIEW_FORWARD_TOOL_NAME, ViewToolObservation
+from .view_policy import needs_additional_view
+from .view_state import ViewEligibilityStore
 
 
 @dataclass(slots=True)
@@ -297,17 +297,10 @@ class ViewBeforeForwardCoordinator:
             ``True``。
         """
 
-        if lookup.status is ViewEligibilityStatus.READY:
-            return False
-
-        observation_kind = lookup.last_observation_kind
-        if observation_kind is None:
-            return True
-        if observation_kind is ViewObservationKind.RETRYABLE_FAILURE:
-            return lookup.retryable_failure_count < self.config.behavior.view_failure_fallback_threshold
-        if observation_kind is ViewObservationKind.EMPTY_CONTENT_FAILURE:
-            return lookup.empty_content_failure_count < EMPTY_CONTENT_FALLBACK_THRESHOLD
-        return False
+        return needs_additional_view(
+            lookup,
+            self.config.behavior.view_failure_fallback_threshold,
+        )
 
     @staticmethod
     def _extract_single_forward_request(

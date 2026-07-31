@@ -17,8 +17,10 @@ if __package__:
         ForwardingRuntime,
     )
     from .forward_messages_auto.config_recovery import LastKnownGoodConfig
-    from .forward_messages_auto.invocation_gate import FORWARD_AUTHORIZATION_ROUND_KWARG
-    from .forward_messages_auto.runtime import FORWARD_TOOL_NAME
+    from .forward_messages_auto.source.authorization import (
+        FORWARD_AUTHORIZATION_ROUND_KWARG,
+        FORWARD_TOOL_NAME,
+    )
 else:
     from forward_messages_auto import (
         CONFIG_VERSION,
@@ -27,8 +29,10 @@ else:
         ForwardingRuntime,
     )
     from forward_messages_auto.config_recovery import LastKnownGoodConfig
-    from forward_messages_auto.invocation_gate import FORWARD_AUTHORIZATION_ROUND_KWARG
-    from forward_messages_auto.runtime import FORWARD_TOOL_NAME
+    from forward_messages_auto.source.authorization import (
+        FORWARD_AUTHORIZATION_ROUND_KWARG,
+        FORWARD_TOOL_NAME,
+    )
 
 
 class ForwardMessagesAutoPlugin(MaiBotPlugin):

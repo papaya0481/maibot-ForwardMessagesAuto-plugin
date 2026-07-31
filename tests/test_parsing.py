@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import pytest
 
-from forward_messages_auto.models import ViewObservationKind
-from forward_messages_auto.parsing import ForwardMessageParser, PlannerHistoryParser
-from forward_messages_auto.view_context import ViewEligibilityStore
+from forward_messages_auto.core.messages import ForwardMessageParser
+from forward_messages_auto.source.history import PlannerHistoryParser
+from forward_messages_auto.source.models import ViewObservationKind
+from forward_messages_auto.source.view_state import ViewEligibilityStore
 from tests.support import build_forward_message
 
 

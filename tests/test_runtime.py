@@ -11,9 +11,9 @@ import sys
 
 import pytest
 
-from forward_messages_auto.models import ViewEligibilityStatus
-from forward_messages_auto.runtime import FORWARD_TOOL_NAME
-from forward_messages_auto.streams import GroupStreamRegistry
+from forward_messages_auto.core.streams import GroupStreamRegistry
+from forward_messages_auto.source.authorization import FORWARD_TOOL_NAME
+from forward_messages_auto.source.models import ViewEligibilityStatus
 from plugin import ForwardMessagesAutoPlugin
 from tests.support import FakeChatCapability, build_plugin
 

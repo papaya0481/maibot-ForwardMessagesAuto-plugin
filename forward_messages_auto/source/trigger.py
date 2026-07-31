@@ -6,12 +6,12 @@ import asyncio
 from collections.abc import Callable
 from typing import Any
 
-from .config import ForwardMessagesAutoConfig, GroupIdList
-from .delivery import CapabilityResult
-from .parsing import ForwardMessageParser
-from .source_message import SourceForwardMessageParser, SourceForwardObservation
-from .source_trigger_state import SourcePlannerTriggerStore
-from .state import ForwardStateStore
+from ..config import ForwardMessagesAutoConfig, GroupIdList
+from ..core.capabilities import CapabilityResult
+from ..core.messages import ForwardMessageParser
+from ..core.state import ForwardStateStore
+from .message import SourceForwardMessageParser, SourceForwardObservation
+from .trigger_state import SourcePlannerTriggerStore
 
 MESSAGE_READY_MAX_ATTEMPTS = 20
 MESSAGE_READY_RETRY_SECONDS = 0.05

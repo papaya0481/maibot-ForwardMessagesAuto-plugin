@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from forward_messages_auto.models import ViewObservationKind
+from forward_messages_auto.source.models import ViewObservationKind
 from tests.support import (
     BlockingSendCapability,
     FakeMessageCapability,
