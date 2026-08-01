@@ -3,15 +3,15 @@
 [![当前版本](https://img.shields.io/github/v/tag/papaya0481/maibot-ForwardMessagesAuto-plugin?sort=semver&label=%E5%BD%93%E5%89%8D%E7%89%88%E6%9C%AC)](https://github.com/papaya0481/maibot-ForwardMessagesAuto-plugin/tags)
 [![许可证](https://img.shields.io/github/license/papaya0481/maibot-ForwardMessagesAuto-plugin?label=%E8%AE%B8%E5%8F%AF%E8%AF%81)](LICENSE)
 
-让 MaiBot 像群聊成员一样，自主判断 source 白名单群中的合并转发是否值得分享，
-再按配置顺序发送到 target 白名单群。插件不会让模型自行指定来源群或目标群。
+让 MaiBot 像群聊成员一样，自主判断群聊中的消息是否值得分享，
+再转发到其他群。群聊由配置白名单决定，目前插件暂时不会让模型自行指定要转发的目标群。
 
 > [!WARNING]
 > 目前只在 QQ 群聊的 SnowLuma Adapter 环境下完成验证。Napcat 理论可行。
 
 ## 主要功能
 
-- source 群 Planner 查看合并转发完整内容后，自主决定是否分享；若偶然漏看，
+- source 群 Planner 查看消息内容后，自主决定是否分享。对于合并转发消息，若偶然漏看，
   插件会在实际发送前补做查看，不会直接绕过内容检查。
 - 一个 source 消息可按配置顺序发送到多个 target 群；单个 target 失败不会阻止
   后续 target，已完成的投递不会因重试或路由调整而重复发送。
@@ -27,39 +27,27 @@
 - 已启用 QQ 群聊能力的适配器；目前仅验证 SnowLuma Adapter `0.8.4` 或更高的
   `0.x` 版本
 
-SnowLuma Adapter 不是 Manifest 强依赖。插件只使用 MaiBot 通用 capabilities，
-因此适配器暂未加载不会阻止插件本身加载，但实际转发仍要求运行环境提供相应能力。
+插件只使用 MaiBot 通用 capabilities，
+因此适配器暂未加载不会阻止插件本身加载，但实际转发仍要求适配器运行环境提供相应能力。
 
+## 安装步骤
 将插件放入 MaiBot 的
-`plugins/MaiBot_ForwardMessagesAuto_Plugin/` 目录。MaiBot 会根据 `plugin.py`
-中的配置模型生成 `config.toml`；该运行时配置文件不应提交到仓库。
+`plugins/MaiBot_ForwardMessagesAuto_Plugin/` 目录。
+
+```
+cd plugins
+git clone https://github.com/papaya0481/maibot-ForwardMessagesAuto-plugin
+```
 
 ## 配置
 
-```toml
-[routing]
-source_groups = ["123456789"]
-target_groups = ["234567890", "345678901"]
-
-[behavior]
-view_failure_fallback_threshold = 2
-trigger_source_planner = false
-trigger_target_planner = true
-```
-
-- `source_groups`：允许触发自主分享的 QQ 群号列表，群号使用字符串。
-- `target_groups`：允许接收分享的 QQ 群号列表；列表顺序就是每次任务的发送顺序。
-- `view_failure_fallback_threshold`：完整内容查看连续发生可重试故障多少次后，
-  才允许使用消息摘要或预览继续判断；最小值为 `1`，默认值为 `2`。参数错误、
-  非合并转发和无法安全分类的失败不会触发降级。首次得到空内容时会再查看一次，
-  连续第二次仍为空才允许降级。
-- `trigger_source_planner`：默认关闭。启用后，source 白名单群收到真实合并转发时
-  会强制触发一次本群 Planner，但不代表一定查看、转发或回复。
-- `trigger_target_planner`：默认开启。每个 target 发送成功后，插件会为该群安排
-  一次 Planner 主动任务。
-
-保存合法 TOML 后，白名单和行为配置会立即刷新，无需关闭再开启插件。若文件
-最终仍不合法，新值不会生效，请根据 MaiBot 日志修正语法。
+| 配置名 | 类型 | 说明 |
+| --- | --- | --- |
+| `source_groups` | `list[str]` | 允许触发自主分享的 QQ 群号列表，群号使用字符串。例如：`["123456789"]`。 |
+| `target_groups` | `list[str]` | 允许接收分享的 QQ 群号列表；列表顺序就是每次任务的发送顺序。例如：`["234567890", "345678901"]`。 |
+| `view_failure_fallback_threshold` | `int` | 针对合并转发消息，完整内容查看连续发生可重试故障多少次后，才允许使用消息摘要或预览继续判断。默认值为 `2`。|
+| `trigger_source_planner` | `bool` | 默认关闭。启用后，source 白名单群收到真实合并转发时会强制触发一次本群 Planner，但不代表一定查看、转发或回复。例如：`true`。 |
+| `trigger_target_planner` | `bool` | 默认开启。每个 target 发送成功后，插件会为该群安排一次 Planner 主动任务。例如：`false`。 |
 
 ## 运行方式
 
