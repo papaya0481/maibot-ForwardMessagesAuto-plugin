@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "id": "papaya0481.forward-messages-auto",
-  "version": "0.2.6",
+  "version": "0.2.7",
   "name": "麦麦自主跨群转发插件",
   "description": "由源群 Planner 判断是否分享合并转发消息，并按 QQ 群白名单顺序转发和触发目标群 Planner。",
   "author": {
@@ -15,7 +15,6 @@
     "documentation": "https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin#readme",
     "issues": "https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/issues"
   },
-  "changelog": "CHANGELOG.md",
   "host_application": {
     "min_version": "1.1.0",
     "max_version": "1.99.99"
