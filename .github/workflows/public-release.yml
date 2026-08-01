@@ -48,7 +48,7 @@ jobs:
           RELEASE_SHA: ${{ steps.prepare.outputs.release_sha }}
           RELEASE_TAG: ${{ steps.prepare.outputs.release_tag }}
         run: |
-          title="chore: 发布 ${RELEASE_TAG} 到 main"
+          title="chore: Release ${RELEASE_TAG} to main"
           body="$(printf '%s\n\n%s\n%s\n%s\n\n%s' \
             '此 PR 由 GitHub Actions 自动生成，请人工复核后合并。' \
             "- 来源 tag：\`${RELEASE_TAG}\`" \
