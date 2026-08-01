@@ -4,7 +4,9 @@
 [![许可证](https://img.shields.io/github/license/papaya0481/maibot-ForwardMessagesAuto-plugin?label=%E8%AE%B8%E5%8F%AF%E8%AF%81)](LICENSE)
 
 让 MaiBot 像群聊成员一样，自主判断群聊中的消息是否值得分享，
-再转发到其他群。群聊由配置白名单决定，目前插件暂时不会让模型自行指定要转发的目标群。
+再转发到其他群。群聊由配置白名单决定，插件暂时不会让模型自行指定要转发的目标群。
+
+目前支持的消息类型有：合并转发消息。
 
 > [!WARNING]
 > 目前只在 QQ 群聊的 SnowLuma Adapter 环境下完成验证。Napcat 理论可行。
@@ -41,17 +43,44 @@ git clone https://github.com/papaya0481/maibot-ForwardMessagesAuto-plugin
 
 ## 配置
 
+首次启动后，MaiBot 会在插件目录生成 `config.toml`。请保留自动生成的
+`plugin.version` 和 `plugin.config_version`，并至少完成以下配置后再启用：
+
+```toml
+[plugin]
+enabled = true
+
+[routing]
+source_groups = ["123456789"]
+target_groups = ["234567890"]
+
+[behavior]
+trigger_source_planner = true
+trigger_target_planner = true
+```
+
+`enabled` 位于 `[plugin]`，群号列表位于 `[routing]`，其余行为开关位于
+`[behavior]`。
+
 | 配置名 | 类型 | 说明 |
 | --- | --- | --- |
-| `source_groups` | `list[str]` | 允许触发自主分享的 QQ 群号列表，群号使用字符串。例如：`["123456789"]`。 |
-| `target_groups` | `list[str]` | 允许接收分享的 QQ 群号列表；列表顺序就是每次任务的发送顺序。例如：`["234567890", "345678901"]`。 |
+| `source_groups` | `list[str]` | 允许触发自主分享的 QQ 群号列表，默认 `[]`；群号使用字符串。例如：`["123456789", "888888"]`。 |
+| `target_groups` | `list[str]` | 允许接收分享的 QQ 群号列表，默认 `[]`；列表顺序就是每次任务的发送顺序。允许与 `source_groups` 有交集。例如：`["234567890", "888888"]`。 |
 | `view_failure_fallback_threshold` | `int` | 针对合并转发消息，完整内容查看连续发生可重试故障多少次后，才允许使用消息摘要或预览继续判断。默认值为 `2`。|
 | `trigger_source_planner` | `bool` | 默认关闭。启用后，source 白名单群收到真实合并转发时会强制触发一次本群 Planner，但不代表一定查看、转发或回复。例如：`true`。 |
 | `trigger_target_planner` | `bool` | 默认开启。每个 target 发送成功后，插件会为该群安排一次 Planner 主动任务。例如：`false`。 |
 
+> [!TIP]
+> `source_groups` 与 `target_groups` 可以有交集。同一任务会排除自收自发的回环行为。
+
+### 跨群分享与隐私边界
+
+source 白名单和 target 白名单决定合并转发内容的跨群流向。请只填写已经同意
+接收这类分享的群聊；插件不会让模型自行指定来源群或目标群。
+
 ## 运行方式
 
-1. source 白名单群收到合并转发；启用 `trigger_source_planner` 时，插件会在
+1. source 白名单群收到消息；启用 `trigger_source_planner` 时，插件会在
    MaiBot 可查询到该消息后触发本群 Planner。
 2. source 群 Planner 查看完整内容并决定是否请求分享。合并转发内部节点最初
    来自哪个群不影响判断，真正的 source 始终是当前白名单群。
@@ -76,3 +105,9 @@ git clone https://github.com/papaya0481/maibot-ForwardMessagesAuto-plugin
 - 目标群近期聊天会按 MaiBot 的正常上下文窗口参与判断；热运行和冷启动时，合并
   转发的初始展示详略可能不同。无法可靠确认目标消息或内容时，Planner 会保持
   沉默。
+
+## 反馈与排障
+
+请通过 [GitHub Issues](https://github.com/papaya0481/maibot-ForwardMessagesAuto-plugin/issues)
+反馈问题。请附上插件、MaiBot、SDK 和 Adapter 版本，最好有脱敏后的相关配置，以及
+触发时间和插件日志；不要提交原始合并转发内容、完整群号或其他隐私信息。
