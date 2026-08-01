@@ -163,10 +163,17 @@ target 侧没有路径差异。在当前检查的 Host 中，目标 Planner 的�
 `send.forward` 没有把该 ID 返回给插件，Planner 在能唯一定位该消息时仍可自行
 调用 `view_forward_message`，并在下一内部轮得到完整展开结果。
 
+#### MaiBot 兼容性
+
+完整的目标消息 ID 与回复锚点能力依赖 MaiBot 的配套
+`1.1.2-send-forward-result` 分支，该分支需包含 commit `dfaf8e8a`。这项能力尚未
+成为 MaiBot 官方稳定通用契约。
+
 插件优先通过 `send.forward(return_details=True)` 取得平台最终目标消息 ID，
 并将它与 `sent` 阶段一起保存，作为目标 Planner 回复这条真实消息的唯一锚点。
-该详细结果目前依赖配套 Host 分支，尚不是官方 Host 的稳定通用契约；Host 未
-返回最终 ID 时仍可完成转发，但 Planner 无法可靠定位消息时必须保持沉默。
+当 MaiBot 未返回最终 ID 时，合并转发仍可正常发送；目标群 Planner 无法可靠定位
+刚发送的消息时会保持沉默，不会猜测回复对象。即使 MaiBot 返回详细结果，只要
+没有最终 `message_id`，也使用相同的兼容行为。
 
 无论路径 A 还是路径 B，source 侧完整查看结果当前只用于分享资格和 fallback
 判断。插件不会通过 `maisaka.context.append` 把它重复注入 target，也尚不能把

@@ -1,9 +1,13 @@
 # 麦麦自主跨群转发插件
 
+[![当前版本](https://img.shields.io/github/v/tag/papaya0481/maibot-ForwardMessagesAuto-plugin?sort=semver&label=%E5%BD%93%E5%89%8D%E7%89%88%E6%9C%AC)](https://github.com/papaya0481/maibot-ForwardMessagesAuto-plugin/tags)
+[![许可证](https://img.shields.io/github/license/papaya0481/maibot-ForwardMessagesAuto-plugin?label=%E8%AE%B8%E5%8F%AF%E8%AF%81)](LICENSE)
+
 让 MaiBot 像群聊成员一样，自主判断 source 白名单群中的合并转发是否值得分享，
 再按配置顺序发送到 target 白名单群。插件不会让模型自行指定来源群或目标群。
 
-当前版本为 `0.2.7`，目前只面向 QQ 群聊，并在 SnowLuma Adapter 环境下完成验证。
+> [!WARNING]
+> 目前只在 QQ 群聊的 SnowLuma Adapter 环境下完成验证。Napcat 理论可行。
 
 ## 主要功能
 
@@ -29,17 +33,6 @@ SnowLuma Adapter 不是 Manifest 强依赖。插件只使用 MaiBot 通用 capab
 将插件放入 MaiBot 的
 `plugins/MaiBot_ForwardMessagesAuto_Plugin/` 目录。MaiBot 会根据 `plugin.py`
 中的配置模型生成 `config.toml`；该运行时配置文件不应提交到仓库。
-
-### Host 兼容说明
-
-完整的目标消息 ID 与回复锚点能力基于 MaiBot Host 分支
-`1.1.2-send-forward-result` 开发，该分支需包含 commit `dfaf8e8a`。这项能力尚未
-成为官方 Host 的稳定通用契约。
-
-使用未包含该能力的 Host 时，合并转发仍可正常发送，但插件可能拿不到最终目标
-消息 ID。目标群 Planner 无法可靠定位刚发送的消息时会保持沉默，不会猜测回复
-对象。Host 即使返回详细结果，只要没有最终 `message_id`，也会使用相同的兼容
-行为。
 
 ## 配置
 
@@ -70,8 +63,8 @@ trigger_target_planner = true
 
 ## 运行方式
 
-1. source 白名单群收到合并转发；启用 `trigger_source_planner` 时，插件会在消息
-   可被 Host 查询后触发本群 Planner。
+1. source 白名单群收到合并转发；启用 `trigger_source_planner` 时，插件会在
+   MaiBot 可查询到该消息后触发本群 Planner。
 2. source 群 Planner 查看完整内容并决定是否请求分享。合并转发内部节点最初
    来自哪个群不影响判断，真正的 source 始终是当前白名单群。
 3. 插件校验 source 白名单、消息归属、消息类型和防重状态，再按
@@ -92,6 +85,6 @@ trigger_target_planner = true
 - source 侧看到的完整内容不会重复注入 target 群上下文。目标群 Planner 可以在
   能唯一定位真实目标消息时再次查看完整内容，但插件目前不强制这一步，也不能
   保证目标 Planner 在首次主动任务中已经取得完整内容。
-- 目标群近期聊天会按 Host 的正常上下文窗口参与判断；热运行和冷启动时，合并
+- 目标群近期聊天会按 MaiBot 的正常上下文窗口参与判断；热运行和冷启动时，合并
   转发的初始展示详略可能不同。无法可靠确认目标消息或内容时，Planner 会保持
   沉默。

@@ -10,10 +10,10 @@
   },
   "license": "MIT",
   "urls": {
-    "repository": "https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin",
-    "homepage": "https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin",
-    "documentation": "https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin#readme",
-    "issues": "https://github.com/papaya0481/MaiBot_ForwardMessagesAuto_Plugin/issues"
+    "repository": "https://github.com/papaya0481/maibot-ForwardMessagesAuto-plugin",
+    "homepage": "https://github.com/papaya0481/maibot-ForwardMessagesAuto-plugin",
+    "documentation": "https://github.com/papaya0481/maibot-ForwardMessagesAuto-plugin#readme",
+    "issues": "https://github.com/papaya0481/maibot-ForwardMessagesAuto-plugin/issues"
   },
   "changelog": "CHANGELOG.md",
   "host_application": {
