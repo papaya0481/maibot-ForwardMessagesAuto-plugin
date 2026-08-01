@@ -1,0 +1,79 @@
+name: 生成公开发布 PR
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: public-release
+  queue: max
+
+jobs:
+  prepare-public-release:
+    name: 从版本 tag 生成公开分支
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 检出版本 tag
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.ref }}
+
+      - name: 获取发布基准分支
+        run: |
+          git fetch --no-tags origin \
+            "+refs/heads/dev:refs/remotes/origin/dev" \
+            "+refs/heads/main:refs/remotes/origin/main"
+
+      - name: 净化并生成 public-release
+        id: prepare
+        run: |
+          bash .github/scripts/prepare-public-release.sh \
+            "${GITHUB_REF_NAME}" origin/dev origin/main
+
+      - name: 更新 public-release 分支
+        if: steps.prepare.outputs.has_changes == 'true'
+        run: git push --force-with-lease origin HEAD:refs/heads/public-release
+
+      - name: 创建或更新 main 发布 PR
+        if: steps.prepare.outputs.has_changes == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ steps.prepare.outputs.release_sha }}
+          RELEASE_TAG: ${{ steps.prepare.outputs.release_tag }}
+        run: |
+          title="chore: 发布 ${RELEASE_TAG} 到 main"
+          body="$(printf '%s\n\n%s\n%s\n%s\n\n%s' \
+            '此 PR 由 GitHub Actions 自动生成，请人工复核后合并。' \
+            "- 来源 tag：\`${RELEASE_TAG}\`" \
+            "- dev commit：\`${RELEASE_SHA}\`" \
+            '- 公开树：保留插件文件与 README.md，移除开发文档和自动化文件' \
+            '工作流不会自动合并此 PR。')"
+          pr_number="$(gh pr list \
+            --repo "${GITHUB_REPOSITORY}" \
+            --base main \
+            --head public-release \
+            --state open \
+            --json number \
+            --jq '.[0].number // empty')"
+
+          if [[ -n "${pr_number}" ]]; then
+            gh pr edit "${pr_number}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --title "${title}" \
+              --body "${body}"
+            echo "已更新 PR #${pr_number}。"
+          else
+            gh pr create \
+              --repo "${GITHUB_REPOSITORY}" \
+              --base main \
+              --head public-release \
+              --title "${title}" \
+              --body "${body}"
+          fi
