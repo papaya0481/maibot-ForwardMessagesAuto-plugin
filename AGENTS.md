@@ -6,6 +6,31 @@
 
 # 其他事项
 
+## 分支与发布流程
+
+- `dev` 是唯一的开发分支。今后的源代码、测试、开发文档和 GitHub Actions
+  修改都必须先进入 `dev`，版本提交与对应 tag 也必须基于 `dev` 中的发布 commit。
+- `main` 是面向用户的公开分支，不直接承载日常开发提交。禁止从本地开发分支
+  直接向 `main` 推送或在 `main` 上继续开发；每个版本只能通过
+  `public-release -> main` Pull Request 更新。
+- `public-release` 是 GitHub Actions 管理的临时公开发布分支，不得人工开发、
+  合并普通提交或作为后续版本的起点。工作流每次都从 `dev` 上带注释的版本 tag
+  对应 commit 重新生成该分支。
+- `dev` 保留完整源码、测试、`AGENTS.md`、`CLAUDE.md`、`CHANGELOG.md`、`docs/`
+  和 `.github/`。生成 `public-release` 时，工作流删除开发专用文档与自动化文件，
+  并移除 Manifest 中指向已删除 `CHANGELOG.md` 的 `changelog` 字段。公开树只保留
+  `README.md` 这一份 Markdown 文档；`LICENSE` 作为许可证文件继续保留。
+- `README.md` 必须能够独立服务普通用户，不得链接或依赖仅存在于 `dev` 的
+  `AGENTS.md`、`CHANGELOG.md`、`docs/` 或其他开发文档。
+- 发布顺序固定为：在 `dev` 完成并验证版本 commit；按需获得授权后单独推送
+  `dev`；在该 commit 上创建带注释的 `v<版本号>` tag；单独推送 tag 触发公开
+  分支生成；最后人工复核并合并工作流创建或更新的
+  `public-release -> main` Pull Request。普通 `dev` push 不触发公开发布。
+- GitHub 仓库必须允许 Actions 创建 Pull Request，并应保护 `main`，仅允许通过
+  Pull Request 合并。工作流只负责创建或更新 PR，不自动合并，也不创建版本 tag。
+
+## 开发与提交
+
 - 每完成一处边界清晰、可以独立说明的修改，都应尽量及时创建 commit；代码、文档、配置及其他类型的改动均适用。
 - commit 应只包含本次相关改动，并使用简短、明确的说明概括修改内容。
 - 使用 coding agent 完成修改时，提交 commit 必须按该 agent 的署名要求，在提交信息末尾附加对应的署名 trailer。
@@ -47,6 +72,19 @@ def load_model(path: str, device: str = "cpu") -> Model:
     Raises:
         FileNotFoundError: 当 ``path`` 指向的检查点不存在时抛出。
     """
+```
+
+## 验证要求
+
+在插件仓库目录至少执行以下自动检查；若本次修改只涉及文档或工作流，可以只运行
+与改动相关的检查，但必须执行 `git diff --check`，并在交付时说明实际运行范围。
+
+```bash
+PYTEST_ADDOPTS="-p no:cacheprovider" ../../.venv/bin/python -m pytest -q
+RUFF_CACHE_DIR=/tmp/maibot-forward-ruff ../../.venv/bin/python -m ruff check plugin.py forward_messages_auto tests
+RUFF_CACHE_DIR=/tmp/maibot-forward-ruff ../../.venv/bin/python -m ruff format --check plugin.py forward_messages_auto tests
+../../.venv/bin/python -m compileall -q plugin.py forward_messages_auto tests
+git diff --check
 ```
 
 # 插件功能
