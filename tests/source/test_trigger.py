@@ -68,17 +68,17 @@ async def test_source_trigger_waits_for_real_message_and_only_queues_planner(tmp
 
 @pytest.mark.asyncio
 async def test_source_trigger_switch_and_source_whitelist_are_independent(tmp_path: Path) -> None:
-    """验证 source 触发开关关闭或群不在 source 白名单时完全忽略消息。
+    """验证显式关闭 source 触发开关或群不在 source 白名单时完全忽略消息。
 
-    默认关闭的插件收到合法 source 消息时不应查询消息或触发 Planner；即使
-    开关启用，非 source 群也应保持相同行为。该测试防止新开关默认改变旧版
-    行为，也防止 target 或任意群绕过 source 白名单触发。
+    默认开启的插件在显式传入 ``False`` 后收到合法 source 消息时不应查询消息
+    或触发 Planner；即使开关启用，非 source 群也应保持相同行为。该测试防止
+    关闭配置失效，也防止 target 或任意群绕过 source 白名单触发。
 
     Args:
         tmp_path: pytest 提供的隔离状态目录，用于分别加载两个插件实例。
     """
 
-    disabled_plugin = build_plugin(tmp_path / "disabled")
+    disabled_plugin = build_plugin(tmp_path / "disabled", trigger_source_planner=False)
     await disabled_plugin.on_load()
     await disabled_plugin.trigger_source_planner_for_forward_message(message=build_forward_message())
     await wait_for_background_tasks(disabled_plugin)
