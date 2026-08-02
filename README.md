@@ -31,7 +31,7 @@
 
 ## 安装步骤
 将插件放入 MaiBot 的
-`plugins/MaiBot_ForwardMessagesAuto_Plugin/` 目录。
+`plugins/` 目录。
 
 ```
 cd plugins
