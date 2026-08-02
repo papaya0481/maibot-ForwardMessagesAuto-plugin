@@ -6,6 +6,15 @@
 
 ## [Unreleased]
 
+## [0.2.10] - 2026-08-02
+
+### Changed
+
+- 将 `behavior.trigger_source_planner` 默认值改为开启。source 白名单群收到真实
+  合并转发时默认触发一次本群 Planner；仍可显式设置为 `false` 关闭，不会自动
+  查看、转发或回复。
+- 由于配置默认语义发生变化，配置版本从 `0.1.21` 直接同步到 `0.2.10`。
+
 ## [0.2.9] - 2026-08-02
 
 ### Changed
@@ -394,7 +403,8 @@
 - 新增分阶段持久化状态与幂等恢复，避免后续步骤失败时重复发送。
 - 新增测试，覆盖缓存、白名单、消息节点、顺序投递、失败隔离和去重。
 
-[Unreleased]: https://github.com/papaya0481/maibot-ForwardMessagesAuto-plugin/compare/v0.2.5...HEAD
+[Unreleased]: https://github.com/papaya0481/maibot-ForwardMessagesAuto-plugin/compare/v0.2.10...HEAD
+[0.2.10]: https://github.com/papaya0481/maibot-ForwardMessagesAuto-plugin/compare/v0.2.9...v0.2.10
 [0.2.5]: https://github.com/papaya0481/maibot-ForwardMessagesAuto-plugin/compare/v0.2.4...v0.2.5
 [0.2.4]: https://github.com/papaya0481/maibot-ForwardMessagesAuto-plugin/compare/v0.2.3...v0.2.4
 [0.2.3]: https://github.com/papaya0481/maibot-ForwardMessagesAuto-plugin/compare/v0.2.2...v0.2.3

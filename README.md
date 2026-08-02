@@ -61,7 +61,7 @@ trigger_target_planner = true
 | `source_groups` | `list[str]` | 允许触发自主分享的 QQ 群号列表，默认 `[]`；群号使用字符串。例如：`["123456789", "888888"]`。 |
 | `target_groups` | `list[str]` | 允许接收分享的 QQ 群号列表，默认 `[]`；列表顺序就是每次任务的发送顺序。允许与 `source_groups` 有交集。例如：`["234567890", "888888"]`。 |
 | `view_failure_fallback_threshold` | `int` | 针对合并转发消息，完整内容查看连续发生可重试故障多少次后，才允许使用消息摘要或预览继续判断。默认值为 `2`。|
-| `trigger_source_planner` | `bool` | 默认关闭。启用后，source 白名单群收到真实合并转发时会强制触发一次本群 Planner，但不代表一定查看、转发或回复。例如：`true`。 |
+| `trigger_source_planner` | `bool` | 默认开启。source 白名单群收到真实合并转发时会强制触发一次本群 Planner；设为 `false` 可关闭，但不代表一定查看、转发或回复。例如：`false`。 |
 | `trigger_target_planner` | `bool` | 默认开启。每个 target 发送成功后，插件会为该群安排一次 Planner 主动任务。例如：`false`。 |
 
 > [!TIP]
@@ -74,8 +74,8 @@ source 白名单和 target 白名单决定合并转发内容的跨群流向。�
 
 ## 运行方式
 
-1. source 白名单群收到消息；启用 `trigger_source_planner` 时，插件会在
-   MaiBot 可查询到该消息后触发本群 Planner。
+1. source 白名单群收到消息；默认启用 `trigger_source_planner`，插件会在
+   MaiBot 可查询到该消息后触发本群 Planner，设为 `false` 可关闭。
 2. source 群 Planner 查看完整内容并决定是否请求分享。合并转发内部节点最初
    来自哪个群不影响判断，真正的 source 始终是当前白名单群。
 3. 插件校验 source 白名单、消息归属、消息类型和防重状态，再按

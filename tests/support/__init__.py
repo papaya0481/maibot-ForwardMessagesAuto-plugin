@@ -8,7 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-from forward_messages_auto.config import PLUGIN_VERSION
+from forward_messages_auto.config import CONFIG_VERSION, PLUGIN_VERSION
 from forward_messages_auto.source.authorization import FORWARD_TOOL_NAME
 from forward_messages_auto.source.models import ViewObservationKind
 from forward_messages_auto.source.history import (
@@ -423,7 +423,7 @@ def build_plugin(
     failed_streams: set[str] | None = None,
     target_groups: list[str] | None = None,
     view_failure_fallback_threshold: int = 2,
-    trigger_source_planner: bool = False,
+    trigger_source_planner: bool = True,
 ) -> ForwardMessagesAutoPlugin:
     """构造启用状态下、带一个 source 和两个 target 的插件。
 
@@ -434,7 +434,7 @@ def build_plugin(
         view_failure_fallback_threshold: 允许摘要或预览降级前，同一消息需要
             连续累计的可重试查看故障次数。
         trigger_source_planner: source 群收到合并转发时是否强制触发本群
-            Planner，默认关闭。
+            Planner，默认开启；传入 ``False`` 可覆盖默认值以测试关闭路径。
 
     Returns:
         已注入强类型配置和 ``FakeContext``、但尚未调用 ``on_load`` 的插件。
@@ -446,7 +446,7 @@ def build_plugin(
             "plugin": {
                 "enabled": True,
                 "version": PLUGIN_VERSION,
-                "config_version": "0.1.21",
+                "config_version": CONFIG_VERSION,
             },
             "routing": {
                 "source_groups": ["10001"],

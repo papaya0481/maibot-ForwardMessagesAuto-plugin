@@ -19,8 +19,8 @@
 
 ### 2.1 当前流程
 
-1. Source 白名单群收到一条合并转发消息；启用
-   `trigger_source_planner` 时，插件强制触发一次 source Planner。
+1. Source 白名单群收到一条合并转发消息；`trigger_source_planner` 默认开启，
+   插件会强制触发一次 source Planner，显式设为 `false` 时关闭。
 2. Source Planner 必须先调用 `view_forward_message(msg_id)` 查看完整内容，再
    决定是否调用 deferred Tool `request_cross_group_forward`；没有合适行动时
    可以保持沉默。
@@ -46,11 +46,14 @@ Source 表示发起分享的群，不要求合并转发中的内容最初产生�
 
 ### 2.2 Source Planner 强制触发
 
-`behavior.trigger_source_planner` 是独立且默认关闭的 source 方向开关。启用
-后，插件通过 `chat.receive.after_process` Hook 在普通回复频率判断前识别 QQ
+`behavior.trigger_source_planner` 是独立且默认开启的 source 方向开关。默认启用
+时，插件通过 `chat.receive.after_process` Hook 在普通回复频率判断前识别 QQ
 群聊中的合并转发；仅当群号位于当前 source 白名单时，才异步等待同一
 `source stream + msg_id` 可由消息能力查询，然后调用
 `maisaka.proactive.trigger` 强制触发该聊天流的 Planner。
+
+显式设置为 `false` 时，插件不进行这项 source 触发，但其他转发处理和目标群
+Planner 配置不受影响。
 
 这项能力只保证主动任务成功入队，不会自动调用 `view_forward_message`，也不
 代表一定转发或回复。Planner 仍结合本群上下文和人设自主决定后续行为。Hook
@@ -195,13 +198,13 @@ target_groups = ["234567890", "345678901"]
 
 [behavior]
 view_failure_fallback_threshold = 2
-trigger_source_planner = false
+trigger_source_planner = true
 trigger_target_planner = true
 ```
 
 - 群号使用字符串；`target_groups` 的顺序就是投递顺序。
 - `trigger_source_planner` 只控制收到合并转发后是否强制触发 source Planner，
-  默认关闭；不自动查看、转发或回复。
+  默认开启；显式设为 `false` 可关闭。它不自动查看、转发或回复。
 - `trigger_target_planner` 只控制发送成功后是否主动触发目标群 Planner。
 - 配置支持热更新；非法 TOML 不会覆盖最近一次有效配置。
 - 插件版本和配置版本独立维护。只有配置发生变化时才修改配置版本，并直接
