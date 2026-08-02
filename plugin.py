@@ -358,7 +358,7 @@ class ForwardMessagesAutoPlugin(MaiBotPlugin):
     @Tool(
         FORWARD_TOOL_NAME,
         brief_description=(
-            "根据 msg_id，将已经完整查看，且你觉得有意思、符合人设、值得转发的合并转发消息分享到其他群聊。"
+            "根据 msg_id，将已经完整查看，且你觉得有意思、符合人设、值得分享的合并转发消息，转发到其他群聊。"
         ),
         detailed_description=(
             "调用本工具前，先查看该消息的全部内容，"
