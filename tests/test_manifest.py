@@ -33,8 +33,8 @@ def test_manifest_and_default_config_versions_match_source_constants() -> None:
 
     预期 Manifest 与默认 ``plugin.version`` 等于 ``PLUGIN_VERSION``，默认
     ``config_version`` 等于承载最近配置变更的 ``CONFIG_VERSION``。source
-    Planner 触发开关应默认关闭，避免升级后静默改变消息处理行为。该测试
-    防止遗漏发布元数据、配置版本或新字段默认值。
+    Planner 触发开关应默认开启，显式配置仍可关闭。该测试防止遗漏发布元数据、
+    配置版本或新字段默认值。
     """
 
     manifest_path = Path(__file__).parents[1] / "_manifest.json"
@@ -47,4 +47,4 @@ def test_manifest_and_default_config_versions_match_source_constants() -> None:
     assert "view_cache_ttl_seconds" not in default_config["behavior"]
     assert "dedupe_ttl_seconds" not in default_config["behavior"]
     assert default_config["behavior"]["view_failure_fallback_threshold"] == 2
-    assert default_config["behavior"]["trigger_source_planner"] is False
+    assert default_config["behavior"]["trigger_source_planner"] is True
