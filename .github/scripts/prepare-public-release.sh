@@ -2,31 +2,31 @@
 
 set -euo pipefail
 
-release_tag="${1:?用法: prepare-public-release.sh <vX.Y.Z> [dev-ref] [main-ref]}"
+release_tag="${1:?Usage: prepare-public-release.sh <vX.Y.Z> [dev-ref] [main-ref]}"
 dev_ref="${2:-origin/dev}"
 main_ref="${3:-origin/main}"
 
 if [[ ! "${release_tag}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-    echo "错误：发布 tag 必须使用 vX.Y.Z 格式，实际为 ${release_tag}。" >&2
+    echo "Error: the release tag must use the vX.Y.Z format; got ${release_tag}." >&2
     exit 1
 fi
 
 tag_ref="refs/tags/${release_tag}"
 if ! git rev-parse --verify --quiet "${tag_ref}" >/dev/null; then
-    echo "错误：找不到发布 tag ${release_tag}。" >&2
+    echo "Error: release tag ${release_tag} was not found." >&2
     exit 1
 fi
 
 tag_type="$(git cat-file -t "${tag_ref}")"
 if [[ "${tag_type}" != "tag" ]]; then
-    echo "错误：${release_tag} 不是带注释的 Git tag。" >&2
+    echo "Error: ${release_tag} is not an annotated Git tag." >&2
     exit 1
 fi
 
 release_sha="$(git rev-list -n 1 "${tag_ref}")"
 dev_sha="$(git rev-parse "${dev_ref}^{commit}")"
 if [[ "${release_sha}" != "${dev_sha}" ]]; then
-    echo "错误：${release_tag} 未指向远端 dev 当前 commit。" >&2
+    echo "Error: ${release_tag} does not point to the current commit of the remote dev ref." >&2
     echo "tag=${release_sha} dev=${dev_sha}" >&2
     exit 1
 fi
@@ -36,14 +36,15 @@ git switch --detach "${release_sha}"
 manifest_version="$(jq -er '.version | select(type == "string" and length > 0)' _manifest.json)"
 tag_version="${release_tag#v}"
 if [[ "${manifest_version}" != "${tag_version}" ]]; then
-    echo "错误：tag 版本 ${tag_version} 与 Manifest 版本 ${manifest_version} 不一致。" >&2
+    echo "Error: tag version ${tag_version} does not match the Manifest version ${manifest_version}." >&2
     exit 1
 fi
 
-# 开发专用目录不会进入公开分支；即使未来其中加入非 Markdown 资源也会整体删除。
+# Development-only directories must not enter the public branch; remove them as a whole even if
+# non-Markdown resources are added to them in the future.
 git rm -r --ignore-unmatch -- .agents .claude .codex .github docs
 
-# README.md 是公开树中唯一允许保留的 Markdown 或类似文档文件。
+# README.md is the only Markdown or similar documentation file allowed in the public tree.
 while IFS= read -r -d '' path; do
     case "${path}" in
         README.md)
@@ -54,19 +55,19 @@ while IFS= read -r -d '' path; do
     esac
 done < <(git ls-files -z)
 
-# CHANGELOG.md 只保留在 dev，因此公开 Manifest 不能继续指向该文件。
+# CHANGELOG.md is kept only on dev, so the public Manifest must not continue to reference it.
 manifest_tmp="_manifest.public-release.tmp"
 jq 'del(.changelog)' _manifest.json >"${manifest_tmp}"
 mv "${manifest_tmp}" _manifest.json
 git add _manifest.json
 
 if [[ ! -f README.md ]]; then
-    echo "错误：公开发布树缺少 README.md。" >&2
+    echo "Error: README.md is missing from the public release tree." >&2
     exit 1
 fi
 
 if grep -Eiq '\]\([^)]*(AGENTS\.md|CLAUDE\.md|CHANGELOG\.md|docs/|forward-message-design)' README.md; then
-    echo "错误：README.md 仍链接到仅存在于 dev 的文档。" >&2
+    echo "Error: README.md still links to documentation that exists only on dev." >&2
     exit 1
 fi
 
@@ -82,14 +83,14 @@ while IFS= read -r -d '' path; do
 done < <(git ls-files -z)
 
 if (( ${#unexpected_docs[@]} > 0 )); then
-    echo "错误：公开发布树仍包含额外文档：" >&2
+    echo "Error: the public release tree still contains additional documentation files:" >&2
     printf '  %s\n' "${unexpected_docs[@]}" >&2
     exit 1
 fi
 
 for forbidden_path in .agents .claude .codex .github docs; do
     if [[ -n "$(git ls-files -- "${forbidden_path}")" ]]; then
-        echo "错误：公开发布树仍包含 ${forbidden_path}/。" >&2
+        echo "Error: the public release tree still contains ${forbidden_path}/." >&2
         exit 1
     fi
 done
@@ -97,14 +98,15 @@ done
 jq -e 'has("changelog") | not' _manifest.json >/dev/null
 git diff --check
 
-# 先保存净化后的完整树，再以最新 main 为父提交，确保发布 PR 只展示本次树差异。
+# Save the sanitized full tree first, then use the latest main as the parent commit so that the
+# release PR shows only the tree changes from this release.
 public_tree="$(git write-tree)"
 git reset --hard "${release_sha}"
 git switch --force-create public-release "${main_ref}"
 git read-tree --reset -u "${public_tree}"
 
 if git diff --cached --quiet; then
-    echo "公开发布树与 main 完全一致，无需创建 PR。"
+    echo "The public release tree is identical to main; no PR is needed."
     if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
         {
             echo "has_changes=false"
@@ -118,8 +120,8 @@ fi
 git config user.name "github-actions[bot]"
 git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 git commit \
-    -m "chore: 生成 ${release_tag} 公开版本" \
-    -m "从 dev 发布 commit ${release_sha} 生成，仅保留面向用户的文档。"
+    -m "chore: generate ${release_tag} public release" \
+    -m "Generated from dev release commit ${release_sha}; retains only user-facing documentation."
 
 if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
     {
@@ -129,4 +131,4 @@ if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
     } >>"${GITHUB_OUTPUT}"
 fi
 
-echo "已从 ${release_tag} 生成 public-release。"
+echo "Generated public-release from ${release_tag}."
