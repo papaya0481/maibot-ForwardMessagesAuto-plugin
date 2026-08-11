@@ -41,6 +41,64 @@ def test_extract_view_forward_results_pairs_tool_call_and_result() -> None:
     assert PlannerHistoryParser.extract_view_results(messages) == [("message-1", "完整展开内容")]
 
 
+def test_view_observations_preserve_requested_and_discovered_nested_paths() -> None:
+    """验证新旧 Planner 历史都保留调用路径和下一层嵌套路径。
+
+    两种载荷都模拟查看 ``path=[0, 0]`` 后由 Host 返回更深的
+    ``path=[0, 0, 0]`` 占位。期望解析结果同时保留已查看路径和新发现路径，
+    防止完整性计算把单层成功结果误认为整条嵌套链已经展开。
+    """
+
+    content = (
+        "【合并转发消息:\n"
+        "【内层用户】: 内层正文 [嵌套转发消息，path=[0, 0, 0]，"
+        "可再次调用 view_forward_message 展开] "
+        "[嵌套转发消息，path=[0, 0, 1]，可再次调用 view_forward_message 展开]\n】"
+    )
+    legacy_messages = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "legacy-nested-call",
+                    "function": {
+                        "name": "view_forward_message",
+                        "arguments": {"msg_id": "message-1", "path": [0, 0]},
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "content": content,
+            "tool_call_id": "legacy-nested-call",
+        },
+    ]
+    context_items = [
+        build_output_item_call(
+            call_id="context-nested-call",
+            item_id="context-nested-call-item",
+            tool_name="view_forward_message",
+            message_id="message-1",
+            path=[0, 0],
+        ),
+        build_output_item_result(
+            "context-nested-call",
+            content,
+            item_id="context-nested-result-item",
+        ),
+    ]
+
+    for observation in (
+        PlannerHistoryParser.extract_view_observations(legacy_messages)[0],
+        PlannerHistoryParser.extract_view_observations(context_items)[0],
+    ):
+        assert observation.path == (0, 0)
+        assert observation.nested_paths == ((0, 0, 0), (0, 0, 1))
+        assert observation.kind is ViewObservationKind.SUCCESS
+
+
 @pytest.mark.parametrize(
     ("content", "expected_kind"),
     [
@@ -184,6 +242,7 @@ def test_context_item_explicit_failure_does_not_grant_view_eligibility() -> None
             item_id="failed-context-result-item",
         ),
     ]
+    items[0]["tool_call"]["args"]["path"] = "invalid-path"
 
     observations = PlannerHistoryParser.extract_view_observations(items)
     store = ViewEligibilityStore()
@@ -192,6 +251,7 @@ def test_context_item_explicit_failure_does_not_grant_view_eligibility() -> None
 
     assert len(observations) == 1
     assert observations[0].kind is ViewObservationKind.UNKNOWN_FAILURE
+    assert observations[0].path is None
     assert PlannerHistoryParser.extract_view_results(items) == []
     assert lookup.status is ViewEligibilityStatus.MISSING
     assert lookup.last_observation_kind is ViewObservationKind.UNKNOWN_FAILURE

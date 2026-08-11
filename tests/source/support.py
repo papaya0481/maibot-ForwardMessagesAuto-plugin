@@ -80,6 +80,7 @@ def build_output_item_call(
     call_id: str = "request-call",
     message_id: str = "forward-message",
     tool_name: str = FORWARD_TOOL_NAME,
+    path: list[int] | None = None,
     sharing_reason: str = "预览看起来很有意思",
     content_summary: str = "预览摘要",
     item_id: str = "output-call-item",
@@ -91,6 +92,7 @@ def build_output_item_call(
         call_id: Context Item 内部的函数调用 ID。
         message_id: 转发或查看工具使用的消息 ID。
         tool_name: 函数名称，默认为自主跨群转发 Tool。
+        path: 查看工具可选的嵌套路径；``None`` 表示省略并查看根层。
         sharing_reason: 转发 Tool 的分享理由参数。
         content_summary: 转发 Tool 的降级摘要参数。
         item_id: Context Item 的唯一 ID。
@@ -101,6 +103,8 @@ def build_output_item_call(
     """
 
     arguments: dict[str, Any] = {"msg_id": message_id}
+    if path is not None:
+        arguments["path"] = list(path)
     if tool_name == FORWARD_TOOL_NAME:
         arguments.update(
             {

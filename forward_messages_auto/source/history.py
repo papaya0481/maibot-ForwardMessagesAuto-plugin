@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -22,16 +23,30 @@ VIEW_FORWARD_RETRYABLE_FAILURE_PREFIXES = (
 )
 VIEW_FORWARD_EMPTY_CONTENT_FAILURE_PREFIXES = ("转发消息内容为空，msg_id=",)
 VIEW_FORWARD_UNKNOWN_FAILURE_PREFIXES = ("工具 view_forward_message 执行失败。",)
+_NESTED_FORWARD_PATH_PATTERN = re.compile(
+    r"\[嵌套转发消息，path=\[(?P<indices>\d+(?:,\s*\d+)*)\]，"
+    r"可再次调用 view_forward_message 展开\]"
+)
+
+
+@dataclass(frozen=True, slots=True)
+class _ViewToolCall:
+    """一条已验证工具名、调用 ID 和消息 ID 的查看调用。"""
+
+    message_id: str
+    path: tuple[int, ...] | None
 
 
 @dataclass(frozen=True, slots=True)
 class ViewToolObservation:
-    """一组已经配对的查看工具调用及文本结果。"""
+    """一组已经配对的查看工具调用、浏览路径及文本结果。"""
 
     call_id: str
     message_id: str
     content: str
     kind: ViewObservationKind
+    path: tuple[int, ...] | None = ()
+    nested_paths: tuple[tuple[int, ...], ...] = ()
 
 
 class PlannerHistoryParser:
@@ -39,10 +54,12 @@ class PlannerHistoryParser:
 
     @staticmethod
     def extract_view_results(messages: Any) -> list[tuple[str, str]]:
-        """提取 ``view_forward_message`` 调用对应的完整文本结果。
+        """提取 ``view_forward_message`` 调用对应的成功文本结果。
 
         方法按消息出现顺序扫描 Planner 历史，先记录 assistant 工具调用中
-        的 ``call_id -> msg_id``，再用 tool 消息中的 ``tool_call_id`` 配对。
+        的调用 ID、消息 ID 和浏览路径，再用 tool 消息中的 ``tool_call_id``
+        配对。该兼容接口不区分结果是否仍暴露待查看的嵌套路径；调用方需要
+        完整性时应使用 ``extract_view_observations`` 和资格存储。
         无关工具、无 ID 调用和格式异常消息都会被忽略；空结果会被记录为
         空内容失败，因此不会出现在本方法返回的成功结果中。
 
@@ -92,16 +109,16 @@ class PlannerHistoryParser:
         if PlannerHistoryParser._is_context_item_history(messages):
             return PlannerHistoryParser._extract_context_item_observations(messages)
 
-        call_to_message_id: dict[str, str] = {}
+        call_by_id: dict[str, _ViewToolCall] = {}
         observations: list[ViewToolObservation] = []
         for message in messages:
             if not isinstance(message, dict):
                 continue
             role = str(message.get("role") or "").strip().lower()
             if role == "assistant":
-                PlannerHistoryParser._record_calls(message, call_to_message_id)
+                PlannerHistoryParser._record_calls(message, call_by_id)
             elif role == "tool":
-                PlannerHistoryParser._record_result(message, call_to_message_id, observations)
+                PlannerHistoryParser._record_result(message, call_by_id, observations)
         return observations
 
     @staticmethod
@@ -161,28 +178,28 @@ class PlannerHistoryParser:
             无法精确配对或结构不完整的 Item 会被忽略。
         """
 
-        call_to_message_id: dict[str, str] = {}
+        call_by_id: dict[str, _ViewToolCall] = {}
         observations: list[ViewToolObservation] = []
         for item in items:
             if not isinstance(item, dict):
                 continue
             item_type = item.get("item_type")
             if item_type == "FunctionCallItem":
-                PlannerHistoryParser._record_context_item_call(item, call_to_message_id)
+                PlannerHistoryParser._record_context_item_call(item, call_by_id)
             elif item_type == "FunctionCallOutputItem":
-                PlannerHistoryParser._record_context_item_result(item, call_to_message_id, observations)
+                PlannerHistoryParser._record_context_item_result(item, call_by_id, observations)
         return observations
 
     @staticmethod
     def _record_context_item_call(
         item: dict[str, Any],
-        call_to_message_id: dict[str, str],
+        call_by_id: dict[str, _ViewToolCall],
     ) -> None:
         """记录最新 Context Item 中的查看函数调用。
 
         Args:
             item: 一个 ``FunctionCallItem`` 快照。
-            call_to_message_id: 可变的调用 ID 到源消息 ID 映射。
+            call_by_id: 可变的调用 ID 到查看调用映射。
         """
 
         raw_call = item.get("tool_call")
@@ -193,38 +210,43 @@ class PlannerHistoryParser:
         call_id = str(raw_call.get("call_id") or "").strip()
         message_id = str(arguments.get("msg_id") or "").strip() if isinstance(arguments, dict) else ""
         if tool_name == VIEW_FORWARD_TOOL_NAME and call_id and message_id:
-            call_to_message_id[call_id] = message_id
+            call_by_id[call_id] = _ViewToolCall(
+                message_id=message_id,
+                path=PlannerHistoryParser._parse_view_path(arguments),
+            )
 
     @staticmethod
     def _record_context_item_result(
         item: dict[str, Any],
-        call_to_message_id: dict[str, str],
+        call_by_id: dict[str, _ViewToolCall],
         observations: list[ViewToolObservation],
     ) -> None:
         """将最新 Context Item 中的工具结果追加到观察列表。
 
         Args:
             item: 一个 ``FunctionCallOutputItem`` 快照。
-            call_to_message_id: 已记录的查看调用 ID 到源消息 ID 映射。
+            call_by_id: 已记录的调用 ID 到查看调用映射。
             observations: 接收已配对观察结果的可变列表。结构化状态为显式
                 失败但文本无法分类时，结果会记录为 ``UNKNOWN_FAILURE``。
         """
 
         call_id = str(item.get("call_id") or "").strip()
-        message_id = call_to_message_id.get(call_id, "")
+        view_call = call_by_id.get(call_id)
         content = item.get("output")
-        if not message_id or not isinstance(content, str):
+        if view_call is None or not isinstance(content, str):
             return
         normalized_content = content.strip()
         observations.append(
             ViewToolObservation(
                 call_id=call_id,
-                message_id=message_id,
+                message_id=view_call.message_id,
                 content=normalized_content,
                 kind=PlannerHistoryParser._classify_context_item_result(
                     normalized_content,
                     item.get("success"),
                 ),
+                path=view_call.path,
+                nested_paths=PlannerHistoryParser._extract_nested_paths(normalized_content),
             )
         )
 
@@ -260,7 +282,7 @@ class PlannerHistoryParser:
         return PlannerHistoryParser._classify_view_result(content)
 
     @staticmethod
-    def _record_calls(message: dict[str, Any], call_to_message_id: dict[str, str]) -> None:
+    def _record_calls(message: dict[str, Any], call_by_id: dict[str, _ViewToolCall]) -> None:
         """记录一条 assistant 消息中的查看工具调用。
 
         兼容 ``function`` 嵌套定义和扁平工具定义。该方法会原地更新调用
@@ -268,8 +290,7 @@ class PlannerHistoryParser:
 
         Args:
             message: 角色为 assistant 的 Planner 历史消息。
-            call_to_message_id: 可变映射，键为工具调用 ID，值为被查看的
-                ``msg_id``。
+            call_by_id: 可变映射，键为工具调用 ID，值为已规范化查看调用。
         """
 
         tool_calls = message.get("tool_calls")
@@ -290,42 +311,89 @@ class PlannerHistoryParser:
             call_id = str(tool_call.get("id") or tool_call.get("call_id") or "").strip()
             message_id = str(arguments.get("msg_id") or "").strip()
             if call_id and message_id:
-                call_to_message_id[call_id] = message_id
+                call_by_id[call_id] = _ViewToolCall(
+                    message_id=message_id,
+                    path=PlannerHistoryParser._parse_view_path(arguments),
+                )
 
     @staticmethod
     def _record_result(
         message: dict[str, Any],
-        call_to_message_id: dict[str, str],
+        call_by_id: dict[str, _ViewToolCall],
         observations: list[ViewToolObservation],
     ) -> None:
         """将一条可配对的 tool 结果追加到结果列表。
 
         Args:
             message: 角色为 tool 的 Planner 历史消息。
-            call_to_message_id: 已收集的工具调用 ID 到源消息 ID 的映射。
+            call_by_id: 已收集的调用 ID 到查看调用映射。
             observations: 接收已配对查看结果的可变列表。调用 ID 已知且
                 ``content`` 为字符串时追加；空白文本按空内容失败记录。
         """
 
         call_id = str(message.get("tool_call_id") or "").strip()
-        message_id = call_to_message_id.get(call_id, "")
+        view_call = call_by_id.get(call_id)
         content = message.get("content")
-        if not message_id or not isinstance(content, str):
+        if view_call is None or not isinstance(content, str):
             return
 
         normalized_content = content.strip()
         observations.append(
             ViewToolObservation(
                 call_id=call_id,
-                message_id=message_id,
+                message_id=view_call.message_id,
                 content=normalized_content,
                 kind=(
                     PlannerHistoryParser._classify_view_result(normalized_content)
                     if normalized_content
                     else ViewObservationKind.EMPTY_CONTENT_FAILURE
                 ),
+                path=view_call.path,
+                nested_paths=PlannerHistoryParser._extract_nested_paths(normalized_content),
             )
         )
+
+    @staticmethod
+    def _parse_view_path(arguments: dict[str, Any]) -> tuple[int, ...] | None:
+        """从查看工具参数中规范化可选嵌套路径。
+
+        Args:
+            arguments: ``view_forward_message`` 的调用参数。省略 ``path`` 时
+                表示根层查看；格式无效时保留为不可用于完整性证明的 ``None``。
+
+        Returns:
+            根层调用返回空元组；有效非负整数数组返回对应元组；其他格式
+            返回 ``None``，但不会影响失败 ToolResult 的配对和分类。
+        """
+
+        raw_path = arguments.get("path", [])
+        if not isinstance(raw_path, list) or any(
+            not isinstance(index, int) or isinstance(index, bool) or index < 0 for index in raw_path
+        ):
+            return None
+        return tuple(raw_path)
+
+    @staticmethod
+    def _extract_nested_paths(content: str) -> tuple[tuple[int, ...], ...]:
+        """提取 Host 浏览结果中尚可继续展开的嵌套路径。
+
+        Args:
+            content: ``view_forward_message`` 返回的已规范化文本。方法只识别
+                当前 Host 生成的完整嵌套占位格式，其他 ``path`` 字样会忽略。
+
+        Returns:
+            按结果文本出现顺序去重后的路径元组；没有嵌套占位时返回空元组。
+        """
+
+        nested_paths: list[tuple[int, ...]] = []
+        seen_paths: set[tuple[int, ...]] = set()
+        for match in _NESTED_FORWARD_PATH_PATTERN.finditer(content):
+            path = tuple(int(index.strip()) for index in match.group("indices").split(","))
+            if path in seen_paths:
+                continue
+            seen_paths.add(path)
+            nested_paths.append(path)
+        return tuple(nested_paths)
 
     @staticmethod
     def _classify_view_result(content: str) -> ViewObservationKind:

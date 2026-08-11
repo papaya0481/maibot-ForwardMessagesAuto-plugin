@@ -35,8 +35,9 @@ class ViewEligibilityStore:
         """用当前 Planner 历史完整替换一个聊天流的查看资格。
 
         任一仍可见的成功结果都会使对应 ``msg_id`` 合法，并使用最后一次
-        成功结果的完整内容。仅在没有成功结果时才根据最后一段连续失败
-        计算降级状态。旧快照中存在但本次上下文已不可见的消息会立即移除。
+        成功结果的文本；同时根据根层和已发现嵌套路径的成功结果计算完整性。
+        仅在没有成功结果时才根据最后一段连续失败计算降级状态。旧快照中
+        存在但本次上下文已不可见的消息会立即移除。
 
         Args:
             stream_id: 当前 source Planner 的聊天流 ID。
@@ -86,6 +87,7 @@ class ViewEligibilityStore:
                 self._entries[key] = ViewEligibilityEntry(
                     call_id=latest_success.call_id,
                     content=latest_success.content,
+                    content_complete=self._content_is_complete(successful),
                 )
                 continue
             self._failure_states[key] = self._build_failure_state(message_observations)
@@ -101,7 +103,8 @@ class ViewEligibilityStore:
 
         Returns:
             ``ViewEligibilityLookup``。当前上下文仍含成功查看结果时返回
-            ``READY`` 和完整内容，否则返回 ``MISSING`` 及可见失败状态。
+            ``READY``、最后一次结果文本和完整性状态，否则返回 ``MISSING``
+            及可见失败状态。
         """
 
         key = (stream_id, message_id)
@@ -110,11 +113,36 @@ class ViewEligibilityStore:
         return ViewEligibilityLookup(
             status=ViewEligibilityStatus.READY if entry is not None else ViewEligibilityStatus.MISSING,
             content=entry.content if entry is not None else "",
+            content_complete=entry.content_complete if entry is not None else False,
             retryable_failure_count=failure_state.retryable_count,
             empty_content_failure_count=failure_state.empty_content_count,
             last_observation_kind=failure_state.last_kind,
             last_failure_content=failure_state.last_content,
         )
+
+    @staticmethod
+    def _content_is_complete(observations: list[ViewToolObservation]) -> bool:
+        """判断当前可见成功结果是否覆盖全部已发现嵌套路径。
+
+        完整性要求根层成功结果仍在当前 Planner 上下文中，并且每个成功
+        结果暴露的嵌套 ``path`` 都存在同一消息的成功查看结果。路径结果还
+        可以继续暴露更深路径，因此对当前观察集合求闭包即可覆盖任意深度。
+
+        Args:
+            observations: 同一 ``msg_id`` 的成功查看观察，按上下文顺序排列。
+
+        Returns:
+            根层和全部已发现路径都有成功结果时返回 ``True``；缺少根层、
+            存在未查看路径或调用路径无效时返回 ``False``。
+        """
+
+        if any(observation.path is None for observation in observations):
+            return False
+        successful_paths = {observation.path for observation in observations}
+        if () not in successful_paths:
+            return False
+        required_paths = {nested_path for observation in observations for nested_path in observation.nested_paths}
+        return required_paths.issubset(successful_paths)
 
     def _remove_stream_snapshot(self, stream_id: str) -> None:
         """移除一个聊天流上一轮派生出的全部资格和失败状态。

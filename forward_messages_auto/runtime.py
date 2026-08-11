@@ -16,6 +16,7 @@ from .core.streams import GroupStreamRegistry
 from .request import ForwardRequestService
 from .source.authorization import ForwardInvocationGate
 from .source.history import PlannerHistoryParser
+from .source.models import ViewEligibilityStatus
 from .source.trigger import SourcePlannerTriggerService
 from .source.output_items import serialize_output_item_tool_calls
 from .source.view_flow import ViewBeforeForwardCoordinator
@@ -45,7 +46,7 @@ class ForwardingRuntime:
 
         self._config_provider = config_provider
         self.view_eligibility = ViewEligibilityStore()
-        self._pending_view_judgments: dict[str, set[str]] = {}
+        self._pending_view_judgments: dict[str, dict[str, bool]] = {}
         self.streams = GroupStreamRegistry(context)
         self.state = ForwardStateStore(
             context.paths.data_dir / "forward_state.json",
@@ -211,8 +212,19 @@ class ForwardingRuntime:
             observations,
         )
         manual_message_ids = [message_id for message_id in fresh_message_ids if message_id not in auto_view_message_ids]
+        pending_judgments = self._pending_view_judgments.get(session_id)
+        if pending_judgments:
+            for message_id in pending_judgments:
+                lookup = self.view_eligibility.lookup(session_id, message_id)
+                if lookup.status is ViewEligibilityStatus.READY:
+                    pending_judgments[message_id] = lookup.content_complete
         if manual_message_ids:
-            self._pending_view_judgments.setdefault(session_id, set()).update(manual_message_ids)
+            pending_judgments = self._pending_view_judgments.setdefault(session_id, {})
+            for message_id in manual_message_ids:
+                pending_judgments[message_id] = self.view_eligibility.lookup(
+                    session_id,
+                    message_id,
+                ).content_complete
         return fresh_message_ids
 
     async def transform_after_response(
@@ -331,10 +343,12 @@ class ForwardingRuntime:
         self.invocation_gate.clear()
 
     def build_view_judgment_reminder(self, session_id: str) -> str:
-        """构造成功查看后等待 Planner 消费的续轮判断提醒。
+        """按嵌套查看完整性构造等待 Planner 消费的续轮判断提醒。
 
         提醒在对应 Planner 请求成功返回前保持待处理，因此请求若被新消息
-        打断，下一次重试仍会收到相同提醒。方法只读取状态，不清除待处理项。
+        打断，下一次重试仍会收到相同提醒。已发现路径尚未全部查看时提供
+        可选继续查看说明，全部覆盖后才声明完整；方法只读取状态，不清除
+        待处理项。
 
         Args:
             session_id: 当前 source Planner 聊天流 ID。
@@ -343,13 +357,39 @@ class ForwardingRuntime:
             有待判断消息时返回一个 ``system-reminder`` 文本，否则返回空串。
         """
 
-        message_ids = sorted(self._pending_view_judgments.get(session_id, set()))
-        if not message_ids:
+        pending_judgments = self._pending_view_judgments.get(session_id, {})
+        if not pending_judgments:
             return ""
-        joined_message_ids = "、".join(message_ids)
+        complete_message_ids = "、".join(
+            sorted(message_id for message_id, is_complete in pending_judgments.items() if is_complete)
+        )
+        nested_message_ids = "、".join(
+            sorted(message_id for message_id, is_complete in pending_judgments.items() if not is_complete)
+        )
+        if complete_message_ids and nested_message_ids:
+            return (
+                "<system-reminder>\n"
+                f"刚刚已经成功查看合并转发消息 msg_id={complete_message_ids} 的完整内容；"
+                f"也已经查看合并转发消息 msg_id={nested_message_ids} 的当前层内容，但后者仍有尚未展开的嵌套转发消息。"
+                "对于仍有嵌套的消息，如果继续查看有助于判断，建议使用刚看到的内容中给出的 path 再次调用 "
+                "view_forward_message；你也可以直接依据当前已看到的内容，分别判断它们是否有意思、符合你的人设并值得"
+                "分享到其他群聊。值得时通过 tool_search 发现并调用 request_cross_group_forward，不值得时不要转发。"
+                "不要等待下一条聊天消息后再作判断。\n"
+                "</system-reminder>"
+            )
+        if nested_message_ids:
+            return (
+                "<system-reminder>\n"
+                f"刚刚已经查看合并转发消息 msg_id={nested_message_ids} 的当前层内容，但其中仍有尚未展开的嵌套转发消息。"
+                "如果继续查看有助于判断，建议使用刚看到的内容中给出的 path 再次调用 view_forward_message；"
+                "你也可以直接依据当前已看到的内容，判断它是否有意思、符合你的人设并值得分享到其他群聊。"
+                "值得时通过 tool_search 发现并调用 request_cross_group_forward，不值得时不要转发。"
+                "不要等待下一条聊天消息后再作判断。\n"
+                "</system-reminder>"
+            )
         return (
             "<system-reminder>\n"
-            f"刚刚已经成功查看合并转发消息 msg_id={joined_message_ids} 的完整内容。"
+            f"刚刚已经成功查看合并转发消息 msg_id={complete_message_ids} 的完整内容。"
             "请在本次续轮中优先依据刚看到的完整内容，判断它是否有意思、符合你的人设并值得分享到其他群聊；"
             "值得时通过 tool_search 发现并调用 request_cross_group_forward，不值得时不要转发。"
             "不要等待下一条聊天消息后再作判断。\n"

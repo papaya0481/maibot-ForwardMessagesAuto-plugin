@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from forward_messages_auto.source.history import ViewToolObservation
 from forward_messages_auto.source.models import ViewEligibilityStatus, ViewObservationKind
+from forward_messages_auto.source.view_policy import needs_additional_view
 from forward_messages_auto.source.view_state import ViewEligibilityStore
 
 
@@ -28,6 +29,7 @@ def test_view_eligibility_follows_current_context_and_classifies_failures() -> N
     ready_lookup = store.lookup("stream-1", "message-1")
     assert ready_lookup.status is ViewEligibilityStatus.READY
     assert ready_lookup.content == "完整内容"
+    assert ready_lookup.content_complete is True
 
     store.sync_context(
         "stream-1",
@@ -114,3 +116,61 @@ def test_view_freshness_is_not_evicted_by_other_stream_activity() -> None:
 
     assert store.sync_context("quiet-stream", [quiet_success]) == []
     assert store.lookup("quiet-stream", "quiet-message").status is ViewEligibilityStatus.READY
+
+
+def test_nested_view_completeness_requires_root_and_every_discovered_path() -> None:
+    """验证嵌套完整性按当前可见路径闭包计算且不阻止提前分享。
+
+    根层先暴露两条路径，其中第二条继续暴露更深路径。各路径尚未全部成功时
+    查看资格仍应为 ``READY``，但 ``content_complete`` 必须保持 ``False``；
+    覆盖全部路径后才变为 ``True``，裁剪根层后又应回到不完整。该测试防止
+    可选继续查看被误改成强制门槛，也防止任意单层成功被宣称为完整内容。
+    """
+
+    store = ViewEligibilityStore()
+    root = ViewToolObservation(
+        call_id="root-call",
+        message_id="nested-message",
+        content="根层内容",
+        kind=ViewObservationKind.SUCCESS,
+        nested_paths=((0, 0), (1, 0)),
+    )
+    first_branch = ViewToolObservation(
+        call_id="first-branch-call",
+        message_id="nested-message",
+        content="第一条分支",
+        kind=ViewObservationKind.SUCCESS,
+        path=(0, 0),
+    )
+    second_branch = ViewToolObservation(
+        call_id="second-branch-call",
+        message_id="nested-message",
+        content="第二条分支",
+        kind=ViewObservationKind.SUCCESS,
+        path=(1, 0),
+        nested_paths=((1, 0, 0),),
+    )
+    deepest_branch = ViewToolObservation(
+        call_id="deepest-branch-call",
+        message_id="nested-message",
+        content="最深层内容",
+        kind=ViewObservationKind.SUCCESS,
+        path=(1, 0, 0),
+    )
+
+    store.sync_context("stream-1", [root])
+    root_lookup = store.lookup("stream-1", "nested-message")
+    assert root_lookup.status is ViewEligibilityStatus.READY
+    assert root_lookup.content_complete is False
+    assert needs_additional_view(root_lookup, retryable_failure_threshold=3) is False
+
+    store.sync_context("stream-1", [root, first_branch, second_branch])
+    assert store.lookup("stream-1", "nested-message").content_complete is False
+
+    store.sync_context("stream-1", [root, first_branch, second_branch, deepest_branch])
+    assert store.lookup("stream-1", "nested-message").content_complete is True
+
+    store.sync_context("stream-1", [first_branch, second_branch, deepest_branch])
+    trimmed_lookup = store.lookup("stream-1", "nested-message")
+    assert trimmed_lookup.status is ViewEligibilityStatus.READY
+    assert trimmed_lookup.content_complete is False

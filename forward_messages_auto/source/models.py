@@ -8,10 +8,11 @@ from enum import Enum
 
 @dataclass(slots=True)
 class ViewEligibilityEntry:
-    """当前 Planner 上下文中一次成功查看的展开结果。"""
+    """当前 Planner 上下文中最后一次成功查看的文本及完整性。"""
 
     call_id: str
     content: str
+    content_complete: bool
 
 
 class ViewEligibilityStatus(str, Enum):
@@ -48,6 +49,7 @@ class ViewEligibilityLookup:
 
     status: ViewEligibilityStatus
     content: str
+    content_complete: bool
     retryable_failure_count: int
     empty_content_failure_count: int
     last_observation_kind: ViewObservationKind | None
