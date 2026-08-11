@@ -6,6 +6,16 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- 适配最新 MaiBot Planner Hook 的 `output_items` / `items` Context Item 契约，
+  修复插件仍读取旧版 `tool_calls` / `messages` 导致转发请求缺少可信 Planner
+  会话授权而被拒绝的问题。
+- 在最新 `FunctionCallItem` 中按真实 Planner session、源消息 ID 和当前 Hook
+  轮次签发并校验一次性凭据；路径 B 的查看结果按 `call_id` 精确匹配并恢复
+  原转发请求，同时保留旧版载荷兼容和混合工具顺序。
+- 增加最新 Context Item 的路径 A、路径 B、主动查看提醒及混合工具批次回归测试。
+
 ## [0.2.10] - 2026-08-02
 
 ### Changed

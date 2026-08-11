@@ -75,6 +75,120 @@ def build_view_history(
     return messages
 
 
+def build_output_item_call(
+    *,
+    call_id: str = "request-call",
+    message_id: str = "forward-message",
+    tool_name: str = FORWARD_TOOL_NAME,
+    sharing_reason: str = "预览看起来很有意思",
+    content_summary: str = "预览摘要",
+    item_id: str = "output-call-item",
+    logical_turn_id: str = "output-turn",
+) -> dict[str, Any]:
+    """构造最新 Host ``output_items`` 契约中的函数调用 Item。
+
+    Args:
+        call_id: Context Item 内部的函数调用 ID。
+        message_id: 转发或查看工具使用的消息 ID。
+        tool_name: 函数名称，默认为自主跨群转发 Tool。
+        sharing_reason: 转发 Tool 的分享理由参数。
+        content_summary: 转发 Tool 的降级摘要参数。
+        item_id: Context Item 的唯一 ID。
+        logical_turn_id: Host 用于配对工具轮次的逻辑 ID。
+
+    Returns:
+        符合当前 schema v1 的 ``FunctionCallItem`` 快照字典。
+    """
+
+    arguments: dict[str, Any] = {"msg_id": message_id}
+    if tool_name == FORWARD_TOOL_NAME:
+        arguments.update(
+            {
+                "sharing_reason": sharing_reason,
+                "content_summary": content_summary,
+            }
+        )
+    return {
+        "item_type": "FunctionCallItem",
+        "meta": {
+            "item_id": item_id,
+            "logical_turn_id": logical_turn_id,
+            "timestamp": "2026-08-11T00:00:00",
+        },
+        "tool_call": {
+            "call_id": call_id,
+            "func_name": tool_name,
+            "args": arguments,
+            "extra_content": None,
+        },
+    }
+
+
+def build_output_item_result(
+    call_id: str,
+    content: str,
+    *,
+    tool_name: str = "view_forward_message",
+    success: bool = True,
+    item_id: str = "output-result-item",
+    logical_turn_id: str = "output-turn",
+) -> dict[str, Any]:
+    """构造最新 Host ``output_items`` 契约中的工具结果 Item。
+
+    Args:
+        call_id: 要配对的函数调用 ID。
+        content: 工具结果文本，空字符串用于模拟空内容失败。
+        tool_name: 工具名称，默认为系统查看工具。
+        success: Host 记录的工具业务成功标志。
+        item_id: Context Item 的唯一 ID。
+        logical_turn_id: Host 用于配对工具轮次的逻辑 ID。
+
+    Returns:
+        符合当前 schema v1 的 ``FunctionCallOutputItem`` 快照字典。
+    """
+
+    return {
+        "item_type": "FunctionCallOutputItem",
+        "meta": {
+            "item_id": item_id,
+            "logical_turn_id": logical_turn_id,
+            "timestamp": "2026-08-11T00:00:01",
+        },
+        "call_id": call_id,
+        "output": content,
+        "success": success,
+        "tool_name": tool_name,
+    }
+
+
+def build_output_item_assistant(
+    content: str,
+    *,
+    item_id: str = "output-assistant-item",
+    logical_turn_id: str = "output-bridge-turn",
+) -> dict[str, Any]:
+    """构造没有工具调用的最新 Planner assistant 输出 Item。
+
+    Args:
+        content: assistant 正文内容。
+        item_id: Context Item 的唯一 ID。
+        logical_turn_id: 当前 Planner 模型输出所属的逻辑轮次 ID。
+
+    Returns:
+        符合当前 schema v1 的 ``AssistantMessageItem`` 快照字典。
+    """
+
+    return {
+        "item_type": "AssistantMessageItem",
+        "meta": {
+            "item_id": item_id,
+            "logical_turn_id": logical_turn_id,
+            "timestamp": "2026-08-11T00:00:02",
+        },
+        "parts": [{"type": "text", "text": content}],
+    }
+
+
 def public_forward_arguments(tool_call: dict[str, Any]) -> dict[str, Any]:
     """读取调用中的公开转发参数并确认内部凭据存在。
 

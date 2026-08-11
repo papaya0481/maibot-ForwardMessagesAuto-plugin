@@ -17,6 +17,13 @@ from .authorization import (
 )
 from .models import ViewEligibilityLookup
 from .history import PlannerHistoryParser, VIEW_FORWARD_TOOL_NAME, ViewToolObservation
+from .output_items import (
+    OutputItemToolCall,
+    append_output_item_call,
+    extract_output_item_tool_calls,
+    replace_first_assistant_text,
+    replace_output_item_call,
+)
 from .view_policy import needs_additional_view
 from .view_state import ViewEligibilityStore
 
@@ -30,6 +37,7 @@ class PendingDirectForward:
     view_call_id: str
     view_result_seen: bool = False
     restored_call_id: str = ""
+    output_item_template: dict[str, Any] | None = None
 
 
 class ViewBeforeForwardCoordinator:
@@ -211,6 +219,85 @@ class ViewBeforeForwardCoordinator:
         )
         return "转发前先查看这则合并转发的完整内容。", [view_call]
 
+    async def transform_after_output_items(
+        self,
+        session_id: str,
+        output_items: Any,
+        authorization_round: str,
+    ) -> Any:
+        """按最新 Context Item 契约编排自动查看和转发续接。
+
+        Args:
+            session_id: 当前 Planner Hook 提供的真实聊天流 ID。
+            output_items: MaiBot ``after_response`` Hook 提供的
+                ``FunctionCallItem`` 快照列表。
+            authorization_round: EARLY Hook 在同一分发链生成的随机标记；
+                缺失或不匹配时不会接受历史凭据。
+
+        Returns:
+            可直接交回 Host 的独立 ``output_items`` 列表。路径 A 只保留清洗
+            后的原 Item；路径 B 将单独转发调用替换为系统查看或恢复调用；
+            多工具和异常结构保持原顺序并交由正式处理器拒绝。
+        """
+
+        normalized_session_id = str(session_id or "").strip()
+        sanitized_items = self._invocation_gate.sanitize_output_items_for_orchestration(
+            normalized_session_id,
+            output_items,
+            authorization_round,
+        )
+        if not normalized_session_id or not isinstance(sanitized_items, list):
+            return sanitized_items
+        if not self.config.plugin.enabled:
+            self._pending_by_session.pop(normalized_session_id, None)
+            return sanitized_items
+
+        pending = self._pending_by_session.get(normalized_session_id)
+        if pending is not None:
+            return await self._advance_pending_output_items(
+                normalized_session_id,
+                pending,
+                sanitized_items,
+            )
+
+        parsed_request = self._extract_single_forward_output_request(sanitized_items)
+        if parsed_request is None:
+            return sanitized_items
+        message_id, arguments, source_call = parsed_request
+
+        lookup = self._view_eligibility.lookup(normalized_session_id, message_id)
+        if not self._needs_another_view(lookup):
+            return sanitized_items
+        if not await self._preflight(normalized_session_id, message_id):
+            self._logger.info(
+                "直接转发请求未通过自动查看预检，保留给正式处理器: stream=%s msg_id=%s",
+                normalized_session_id,
+                message_id,
+            )
+            return sanitized_items
+
+        self._invocation_gate.revoke_output_items(sanitized_items)
+        view_call_id = f"cross-forward-auto-view-{uuid4().hex}"
+        view_items = replace_output_item_call(
+            sanitized_items,
+            source_call.index,
+            VIEW_FORWARD_TOOL_NAME,
+            {"msg_id": message_id},
+            call_id=view_call_id,
+        )
+        self._pending_by_session[normalized_session_id] = PendingDirectForward(
+            message_id=message_id,
+            arguments=arguments,
+            view_call_id=view_call_id,
+            output_item_template=deepcopy(sanitized_items[source_call.index]),
+        )
+        self._logger.info(
+            "转发请求缺少成功查看结果，先执行系统查看: stream=%s msg_id=%s",
+            normalized_session_id,
+            message_id,
+        )
+        return replace_first_assistant_text(view_items, "转发前先查看这则合并转发的完整内容。")
+
     def clear(self) -> None:
         """清除尚未发生物理发送的进程内续接请求。
 
@@ -285,6 +372,91 @@ class ViewBeforeForwardCoordinator:
         )
         return "已完成转发前查看，继续执行原转发请求。", [restored_call]
 
+    async def _advance_pending_output_items(
+        self,
+        session_id: str,
+        pending: PendingDirectForward,
+        output_items: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """根据最新 Context Item 历史推进一条待续接转发请求。
+
+        Args:
+            session_id: 待续接请求所属的 Planner 聊天流 ID。
+            pending: 当前聊天流保存的原始公开转发参数和查看调用 ID。
+            output_items: 当前模型输出的 Context Item 快照列表，已由 LATE
+                授权校验清除失效的内部凭据。
+
+        Returns:
+            当前轮应交回 Host 的 Item 列表。混合工具输出不被重排；单独调用
+            会被替换为下一次查看或带新凭据的恢复调用。
+        """
+
+        if pending.restored_call_id:
+            return output_items
+        if not pending.view_result_seen:
+            self._pending_by_session.pop(session_id, None)
+            self._logger.warning(
+                "系统查看结果已不在当前 Planner 上下文，停止自动续接: stream=%s msg_id=%s",
+                session_id,
+                pending.message_id,
+            )
+            return output_items
+
+        lookup = self._view_eligibility.lookup(session_id, pending.message_id)
+        output_calls = extract_output_item_tool_calls(output_items)
+        if len(output_calls) > 1:
+            self._invocation_gate.revoke_output_items(output_items)
+            self._pending_by_session.pop(session_id, None)
+            return output_items
+
+        replacement_index = output_calls[0].index if output_calls else None
+        template_item = next(
+            (item for item in output_items if isinstance(item, dict) and isinstance(item.get("meta"), dict)),
+            pending.output_item_template,
+        )
+        if self._needs_another_view(lookup):
+            self._invocation_gate.revoke_output_items(output_items)
+            view_call_id = f"cross-forward-auto-view-{uuid4().hex}"
+            updated_items = self._replace_or_append_output_item_call(
+                output_items,
+                replacement_index,
+                VIEW_FORWARD_TOOL_NAME,
+                {"msg_id": pending.message_id},
+                call_id=view_call_id,
+                template_item=template_item,
+            )
+            pending.view_call_id = view_call_id
+            pending.view_result_seen = False
+            self._logger.info(
+                "系统查看尚未达到成功或降级条件，继续查看: stream=%s msg_id=%s",
+                session_id,
+                pending.message_id,
+            )
+            return replace_first_assistant_text(updated_items, "完整内容尚未取得，继续执行系统查看。")
+
+        self._invocation_gate.revoke_output_items(output_items)
+        restored_call_id = f"cross-forward-auto-request-{uuid4().hex}"
+        restored_arguments = self._invocation_gate.authorize_arguments(
+            session_id,
+            pending.arguments,
+        )
+        restored_items = self._replace_or_append_output_item_call(
+            output_items,
+            replacement_index,
+            FORWARD_TOOL_NAME,
+            restored_arguments,
+            call_id=restored_call_id,
+            template_item=template_item,
+        )
+        pending.restored_call_id = restored_call_id
+        self._logger.info(
+            "系统查看阶段结束，恢复原转发请求: stream=%s msg_id=%s status=%s",
+            session_id,
+            pending.message_id,
+            lookup.status.value,
+        )
+        return replace_first_assistant_text(restored_items, "已完成转发前查看，继续执行原转发请求。")
+
     def _needs_another_view(self, lookup: ViewEligibilityLookup) -> bool:
         """判断当前查看状态是否需要系统继续调用查看工具。
 
@@ -300,6 +472,80 @@ class ViewBeforeForwardCoordinator:
         return needs_additional_view(
             lookup,
             self.config.behavior.view_failure_fallback_threshold,
+        )
+
+    @staticmethod
+    def _extract_single_forward_output_request(
+        output_items: Any,
+    ) -> tuple[str, dict[str, Any], OutputItemToolCall] | None:
+        """读取最新 Context Item 中结构完整且单独出现的直接转发调用。
+
+        Args:
+            output_items: Host ``after_response`` Hook 提供的 Context Item
+                快照列表，内部凭据必须已经通过 LATE 精确校验。
+
+        Returns:
+            唯一调用为 ``request_cross_group_forward`` 且携带有效凭据时，返回
+            消息 ID、公开参数和原调用描述；多工具、缺少凭据或结构异常时
+            返回 ``None``。
+        """
+
+        output_calls = extract_output_item_tool_calls(output_items)
+        if len(output_calls) != 1:
+            return None
+        source_call = output_calls[0]
+        if source_call.name != FORWARD_TOOL_NAME:
+            return None
+        message_id = str(source_call.arguments.get("msg_id") or "").strip()
+        authorization_token = str(source_call.arguments.get(FORWARD_CONTEXT_TOKEN_ARGUMENT) or "").strip()
+        if not message_id or not authorization_token:
+            return None
+        arguments = {
+            key: deepcopy(source_call.arguments[key])
+            for key in PUBLIC_FORWARD_ARGUMENTS
+            if key in source_call.arguments
+        }
+        arguments["msg_id"] = message_id
+        return message_id, arguments, source_call
+
+    @staticmethod
+    def _replace_or_append_output_item_call(
+        output_items: list[dict[str, Any]],
+        replacement_index: int | None,
+        tool_name: str,
+        arguments: dict[str, Any],
+        *,
+        call_id: str,
+        template_item: dict[str, Any] | None,
+    ) -> list[dict[str, Any]]:
+        """在当前输出中替换唯一函数调用，或按协议元数据追加新调用。
+
+        Args:
+            output_items: 当前 Planner 输出的 Context Item 快照列表。
+            replacement_index: 可替换的函数调用下标；没有调用时为 ``None``。
+            tool_name: 要生成的函数名称。
+            arguments: 要生成的函数参数。
+            call_id: 要生成的函数调用 ID。
+            template_item: 没有当前函数调用时用于补齐逻辑轮次的模板 Item。
+
+        Returns:
+            独立的 Context Item 列表，保留非工具 Item 的相对顺序。
+        """
+
+        if replacement_index is not None:
+            return replace_output_item_call(
+                output_items,
+                replacement_index,
+                tool_name,
+                arguments,
+                call_id=call_id,
+            )
+        return append_output_item_call(
+            output_items,
+            tool_name,
+            arguments,
+            call_id=call_id,
+            template_item=template_item,
         )
 
     @staticmethod

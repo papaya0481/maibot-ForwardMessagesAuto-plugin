@@ -17,6 +17,7 @@ from .request import ForwardRequestService
 from .source.authorization import ForwardInvocationGate
 from .source.history import PlannerHistoryParser
 from .source.trigger import SourcePlannerTriggerService
+from .source.output_items import serialize_output_item_tool_calls
 from .source.view_flow import ViewBeforeForwardCoordinator
 from .source.view_state import ViewEligibilityStore
 from .target.delivery import ForwardDeliveryService
@@ -181,31 +182,32 @@ class ForwardingRuntime:
             )
         return self.source_trigger.observe(message)
 
-    def capture_view_results(self, session_id: str, messages: Any) -> list[str]:
+    def capture_view_results(self, session_id: str, history_items: Any) -> list[str]:
         """按 Planner 当前历史同步查看资格并登记新的成功结果。
 
-        每轮都用当前消息历史替换该聊天流的旧快照，因此被上下文裁剪的
-        查看结果立即失效。仍可见的成功结果持续合法且不按时间过期；失败
-        结果按可重试、空内容、可修正、终止和未知类型重新计算。每个成功
-        ``tool_call_id`` 只会首次登记为等待 Planner 立即判断的消息。
+        每轮都用当前消息或 Context Item 历史替换该聊天流的旧快照，因此被
+        上下文裁剪的查看结果立即失效。仍可见的成功结果持续合法且不按时间
+        过期；失败结果按可重试、空内容、可修正、终止和未知类型重新计算。
+        每个成功 ``tool_call_id`` 只会首次登记为等待 Planner 立即判断的消息。
 
         Args:
             session_id: source Planner 当前聊天流 ID。
-            messages: Planner 请求携带的 OpenAI 兼容消息历史。
+            history_items: Planner 请求携带的旧版 OpenAI 消息历史，或最新
+                ``before_request`` Hook 的 Context Item 快照列表。
 
         Returns:
             本次首次捕获成功的 ``msg_id`` 列表。调用方可据此判断是否需要
             向紧接着的 Planner 请求追加一次性续轮提醒。
         """
 
-        observations = PlannerHistoryParser.extract_view_observations(messages)
+        observations = PlannerHistoryParser.extract_view_observations(history_items)
         fresh_message_ids = self.view_eligibility.sync_context(
             session_id,
             observations,
         )
         auto_view_message_ids = self.view_before_forward.capture_context(
             session_id,
-            messages,
+            history_items,
             observations,
         )
         manual_message_ids = [message_id for message_id in fresh_message_ids if message_id not in auto_view_message_ids]
@@ -242,6 +244,30 @@ class ForwardingRuntime:
         self.acknowledge_view_judgment(session_id)
         return transformed
 
+    async def transform_after_output_items(
+        self,
+        session_id: str,
+        output_items: Any,
+        authorization_round: str,
+    ) -> Any:
+        """把最新 Planner 输出 Item 交给自动查看续接协调器。
+
+        Args:
+            session_id: 当前 Planner Hook 提供的真实聊天流 ID。
+            output_items: ``maisaka.planner.after_response`` 提供的 Context Item
+                快照列表。
+            authorization_round: EARLY Hook 生成的当前分发链随机标记。
+
+        Returns:
+            已清洗或按路径 B 替换后的 Context Item 快照列表。
+        """
+
+        return await self.view_before_forward.transform_after_output_items(
+            session_id,
+            output_items,
+            authorization_round,
+        )
+
     def authorize_forward_calls(self, session_id: str, tool_calls: Any) -> tuple[Any, str]:
         """清洗转发参数并绑定真实 ``after_response`` 会话。
 
@@ -266,6 +292,28 @@ class ForwardingRuntime:
         )
         self.debug_stats.record_requested_calls(session_id, sanitized_calls)
         return sanitized_calls, authorization_round
+
+    def authorize_forward_output_items(self, session_id: str, output_items: Any) -> tuple[Any, str]:
+        """清洗最新 Planner 输出 Item 并绑定真实会话授权。
+
+        Args:
+            session_id: Host Hook 提供的真实 Planner 会话 ID。
+            output_items: Host 序列化的 ``FunctionCallItem`` 快照列表。
+
+        Returns:
+            二元组包含清洗后的 Context Item 快照和当前 Hook 分发链随机标记。
+            调试统计使用旧版调用字典作为内部兼容投影，但不会改变返回协议。
+        """
+
+        sanitized_items, authorization_round = self.invocation_gate.sanitize_and_authorize_output_items(
+            session_id,
+            output_items,
+        )
+        self.debug_stats.record_requested_calls(
+            session_id,
+            serialize_output_item_tool_calls(sanitized_items),
+        )
+        return sanitized_items, authorization_round
 
     def cancel_pending_direct_forwards(self) -> None:
         """取消尚未发送的路径 B 续接请求。

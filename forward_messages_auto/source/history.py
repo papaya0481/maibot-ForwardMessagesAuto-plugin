@@ -69,12 +69,15 @@ class PlannerHistoryParser:
     def extract_view_observations(messages: Any) -> list[ViewToolObservation]:
         """提取查看调用、结果文本和插件可识别的结果分类。
 
-        当前 Host 的 ``before_request`` Hook 不提供 ToolResult ``success``
-        字段，因此结果分类暂时通过内置工具和统一注册表的稳定错误前缀
-        判断。未命中已知失败前缀的非空结果按成功处理。
+        方法同时支持旧版 OpenAI 消息历史和最新 Context Item 快照。旧版
+        历史通过 ``assistant.tool_calls`` 与 ``tool`` 消息配对；最新载荷通过
+        ``FunctionCallItem`` 与 ``FunctionCallOutputItem`` 的调用 ID 配对。
+        结果分类仍优先使用内置工具稳定错误前缀，避免把普通成功文本误判为
+        可重试失败。
 
         Args:
-            messages: Planner 请求中的 OpenAI 兼容消息字典列表。
+            messages: Planner 请求中的 OpenAI 消息历史，或最新
+                ``before_request`` Hook 的 Context Item 快照列表。
 
         Returns:
             按 tool 消息出现顺序排列的 ``ViewToolObservation`` 列表。无法
@@ -84,6 +87,9 @@ class PlannerHistoryParser:
 
         if not isinstance(messages, list):
             return []
+
+        if PlannerHistoryParser._is_context_item_history(messages):
+            return PlannerHistoryParser._extract_context_item_observations(messages)
 
         call_to_message_id: dict[str, str] = {}
         observations: list[ViewToolObservation] = []
@@ -102,7 +108,8 @@ class PlannerHistoryParser:
         """判断当前 Planner 历史是否包含指定工具调用的结果。
 
         Args:
-            messages: Planner 请求中的 OpenAI 兼容消息字典列表。
+            messages: Planner 请求中的 OpenAI 消息历史，或最新 Context Item
+                快照列表。
             call_id: 要查找的非空工具调用 ID。
 
         Returns:
@@ -113,11 +120,111 @@ class PlannerHistoryParser:
         normalized_call_id = str(call_id or "").strip()
         if not normalized_call_id or not isinstance(messages, list):
             return False
+        if PlannerHistoryParser._is_context_item_history(messages):
+            return any(
+                isinstance(item, dict)
+                and item.get("item_type") == "FunctionCallOutputItem"
+                and str(item.get("call_id") or "").strip() == normalized_call_id
+                for item in messages
+            )
         return any(
             isinstance(message, dict)
             and str(message.get("role") or "").strip().lower() == "tool"
             and str(message.get("tool_call_id") or "").strip() == normalized_call_id
             for message in messages
+        )
+
+    @staticmethod
+    def _is_context_item_history(messages: list[Any]) -> bool:
+        """判断列表是否使用最新 Context Item 快照格式。
+
+        Args:
+            messages: 待判断的历史列表。
+
+        Returns:
+            列表中至少存在带 ``item_type`` 字段的字典时返回 ``True``，否则
+            按旧版 OpenAI 消息历史处理。
+        """
+
+        return any(isinstance(item, dict) and "item_type" in item for item in messages)
+
+    @staticmethod
+    def _extract_context_item_observations(items: list[Any]) -> list[ViewToolObservation]:
+        """从最新 Context Item 快照中配对查看调用与结果。
+
+        Args:
+            items: ``before_request`` Hook 提供的 Context Item 快照列表。
+
+        Returns:
+            按 ``FunctionCallOutputItem`` 出现顺序排列的查看结果观察列表；
+            无法精确配对或结构不完整的 Item 会被忽略。
+        """
+
+        call_to_message_id: dict[str, str] = {}
+        observations: list[ViewToolObservation] = []
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            item_type = item.get("item_type")
+            if item_type == "FunctionCallItem":
+                PlannerHistoryParser._record_context_item_call(item, call_to_message_id)
+            elif item_type == "FunctionCallOutputItem":
+                PlannerHistoryParser._record_context_item_result(item, call_to_message_id, observations)
+        return observations
+
+    @staticmethod
+    def _record_context_item_call(
+        item: dict[str, Any],
+        call_to_message_id: dict[str, str],
+    ) -> None:
+        """记录最新 Context Item 中的查看函数调用。
+
+        Args:
+            item: 一个 ``FunctionCallItem`` 快照。
+            call_to_message_id: 可变的调用 ID 到源消息 ID 映射。
+        """
+
+        raw_call = item.get("tool_call")
+        if not isinstance(raw_call, dict):
+            return
+        tool_name = str(raw_call.get("func_name") or "").strip()
+        arguments = raw_call.get("args")
+        call_id = str(raw_call.get("call_id") or "").strip()
+        message_id = str(arguments.get("msg_id") or "").strip() if isinstance(arguments, dict) else ""
+        if tool_name == VIEW_FORWARD_TOOL_NAME and call_id and message_id:
+            call_to_message_id[call_id] = message_id
+
+    @staticmethod
+    def _record_context_item_result(
+        item: dict[str, Any],
+        call_to_message_id: dict[str, str],
+        observations: list[ViewToolObservation],
+    ) -> None:
+        """将最新 Context Item 中的工具结果追加到观察列表。
+
+        Args:
+            item: 一个 ``FunctionCallOutputItem`` 快照。
+            call_to_message_id: 已记录的查看调用 ID 到源消息 ID 映射。
+            observations: 接收已配对观察结果的可变列表。
+        """
+
+        call_id = str(item.get("call_id") or "").strip()
+        message_id = call_to_message_id.get(call_id, "")
+        content = item.get("output")
+        if not message_id or not isinstance(content, str):
+            return
+        normalized_content = content.strip()
+        observations.append(
+            ViewToolObservation(
+                call_id=call_id,
+                message_id=message_id,
+                content=normalized_content,
+                kind=(
+                    PlannerHistoryParser._classify_view_result(normalized_content)
+                    if normalized_content
+                    else ViewObservationKind.EMPTY_CONTENT_FAILURE
+                ),
+            )
         )
 
     @staticmethod
