@@ -6,6 +6,19 @@
 
 ## [Unreleased]
 
+## [0.2.11] - 2026-08-11
+
+### Added
+
+- 新增 `TODO-008`，记录合并转发内部嵌套转发在实际投递链中被丢弃的问题，
+  并明确 Host、SDK、Adapter、QQ/NapCat 的能力检测、安全失败和真实环境验收边界。
+
+### Changed
+
+- 将公开发布脚本的注释、提示和生成提交信息改为英文，不改变 tag 校验、公开树
+  净化、`public-release` 生成或 PR 更新行为。
+- 本版本没有修改配置结构、字段、默认值或语义，配置版本继续保持 `0.2.10`。
+
 ### Fixed
 
 - 适配最新 MaiBot Planner Hook 的 `output_items` / `items` Context Item 契约，
@@ -14,7 +27,15 @@
 - 在最新 `FunctionCallItem` 中按真实 Planner session、源消息 ID 和当前 Hook
   轮次签发并校验一次性凭据；路径 B 的查看结果按 `call_id` 精确匹配并恢复
   原转发请求，同时保留旧版载荷兼容和混合工具顺序。
-- 增加最新 Context Item 的路径 A、路径 B、主动查看提醒及混合工具批次回归测试。
+- 尊重 `FunctionCallOutputItem.success=False` 的显式失败状态，避免未知的非空
+  失败文本被误登记为成功查看资格。
+- 最新 Context Item 的普通 Planner 响应会消费已经展示的主动查看判断提醒，
+  避免后续普通轮次持续重复注入同一提醒。
+- 记录每次 `view_forward_message` 的调用 `path` 和结果中继续暴露的嵌套路径；
+  只有根层及全部已发现路径都成功查看时才声明内容完整。仍有嵌套时改为提示
+  Planner 可按需继续查看或直接判断，不将完整展开设为强制转发门槛。
+- 增加最新 Context Item 的路径 A、路径 B、显式失败、提醒消费、嵌套完整性及
+  混合工具批次回归测试。
 
 ## [0.2.10] - 2026-08-02
 
@@ -413,7 +434,8 @@
 - 新增分阶段持久化状态与幂等恢复，避免后续步骤失败时重复发送。
 - 新增测试，覆盖缓存、白名单、消息节点、顺序投递、失败隔离和去重。
 
-[Unreleased]: https://github.com/papaya0481/maibot-ForwardMessagesAuto-plugin/compare/v0.2.10...HEAD
+[Unreleased]: https://github.com/papaya0481/maibot-ForwardMessagesAuto-plugin/compare/v0.2.11...HEAD
+[0.2.11]: https://github.com/papaya0481/maibot-ForwardMessagesAuto-plugin/compare/v0.2.10...v0.2.11
 [0.2.10]: https://github.com/papaya0481/maibot-ForwardMessagesAuto-plugin/compare/v0.2.9...v0.2.10
 [0.2.5]: https://github.com/papaya0481/maibot-ForwardMessagesAuto-plugin/compare/v0.2.4...v0.2.5
 [0.2.4]: https://github.com/papaya0481/maibot-ForwardMessagesAuto-plugin/compare/v0.2.3...v0.2.4
