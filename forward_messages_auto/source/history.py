@@ -72,8 +72,9 @@ class PlannerHistoryParser:
         方法同时支持旧版 OpenAI 消息历史和最新 Context Item 快照。旧版
         历史通过 ``assistant.tool_calls`` 与 ``tool`` 消息配对；最新载荷通过
         ``FunctionCallItem`` 与 ``FunctionCallOutputItem`` 的调用 ID 配对。
-        结果分类仍优先使用内置工具稳定错误前缀，避免把普通成功文本误判为
-        可重试失败。
+        最新载荷优先使用结构化 ``success`` 字段；显式失败再按内置工具稳定
+        错误前缀细分，无法识别时归为未知失败。旧版载荷仍通过稳定前缀兼容
+        分类，避免把普通成功文本误判为可重试失败。
 
         Args:
             messages: Planner 请求中的 OpenAI 消息历史，或最新
@@ -205,7 +206,8 @@ class PlannerHistoryParser:
         Args:
             item: 一个 ``FunctionCallOutputItem`` 快照。
             call_to_message_id: 已记录的查看调用 ID 到源消息 ID 映射。
-            observations: 接收已配对观察结果的可变列表。
+            observations: 接收已配对观察结果的可变列表。结构化状态为显式
+                失败但文本无法分类时，结果会记录为 ``UNKNOWN_FAILURE``。
         """
 
         call_id = str(item.get("call_id") or "").strip()
@@ -219,13 +221,43 @@ class PlannerHistoryParser:
                 call_id=call_id,
                 message_id=message_id,
                 content=normalized_content,
-                kind=(
-                    PlannerHistoryParser._classify_view_result(normalized_content)
-                    if normalized_content
-                    else ViewObservationKind.EMPTY_CONTENT_FAILURE
+                kind=PlannerHistoryParser._classify_context_item_result(
+                    normalized_content,
+                    item.get("success"),
                 ),
             )
         )
+
+    @staticmethod
+    def _classify_context_item_result(
+        content: str,
+        success: Any,
+    ) -> ViewObservationKind:
+        """优先根据 Context Item 的结构化状态分类查看结果。
+
+        Args:
+            content: 已去除首尾空白的 ToolResult 文本，允许为空。
+            success: ``FunctionCallOutputItem`` 的结构化成功标志。布尔值以外
+                的输入按缺少字段处理，以兼容非标准或更旧的快照。
+
+        Returns:
+            显式成功且内容非空时返回 ``SUCCESS``；显式失败会继续按稳定错误
+            前缀细分，未匹配前缀时返回 ``UNKNOWN_FAILURE``。空内容始终返回
+            ``EMPTY_CONTENT_FAILURE``；缺少结构化状态时沿用旧版文本分类。
+        """
+
+        if success is True:
+            return ViewObservationKind.SUCCESS if content else ViewObservationKind.EMPTY_CONTENT_FAILURE
+        if success is False:
+            if not content:
+                return ViewObservationKind.EMPTY_CONTENT_FAILURE
+            classified = PlannerHistoryParser._classify_view_result(content)
+            if classified is ViewObservationKind.SUCCESS:
+                return ViewObservationKind.UNKNOWN_FAILURE
+            return classified
+        if not content:
+            return ViewObservationKind.EMPTY_CONTENT_FAILURE
+        return PlannerHistoryParser._classify_view_result(content)
 
     @staticmethod
     def _record_calls(message: dict[str, Any], call_to_message_id: dict[str, str]) -> None:
@@ -304,7 +336,8 @@ class PlannerHistoryParser:
 
         Returns:
             对应的 ``ViewObservationKind``。未匹配任何已知失败前缀时返回
-            ``SUCCESS``，因为当前 Hook 无法读取 ToolResult 的成功标志。
+            ``SUCCESS``，供缺少结构化状态的旧版消息历史兼容使用；显式失败
+            的 Context Item 会由调用方把该默认值收紧为 ``UNKNOWN_FAILURE``。
         """
 
         if content.startswith(VIEW_FORWARD_CORRECTABLE_FAILURE_PREFIXES):
