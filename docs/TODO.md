@@ -145,11 +145,12 @@ tool call 与 ToolResult；不得只注入一段声称“已经查看”的提�
 #### 背景
 
 插件把 source 群中的合并转发发送到 target 群后，目标平台会分配新的消息
-ID。MaiBot 发送服务会先用平台成功回执更新最终 `SessionMessage.message_id`，
-但当前官方 Host 的 `send.forward` capability 只返回发送成功布尔值；SDK 又把
-该响应归一化为 `bool`，因此正式上游契约仍会在 Host 与 SDK 边界丢失最终 ID。
-配套 Host 分支 `1.1.2-send-forward-result` 已能返回详细结果，插件也能取得并
-持久化其中的最终 ID，但这不能视为官方 Host 的通用能力。
+ID。MaiBot 发送服务会先用平台成功回执更新最终 `SessionMessage.message_id`。
+MaiBot `dev` 的 `7a2bdc26a` 已让 `send.forward(return_details=True)` 返回
+`success`、`sent` 和最终 `message_id`；但当前 SDK 会因顶层 `success` 字段将该
+详细结果归一化为 `bool`，所以普通 `ctx.send.forward` 代理仍会丢失最终 ID。
+插件仅对这个已声明的详细发送请求使用 SDK 允许的原始 `cap.call` 通道保留结果，
+再按 target 持久化最终 ID；这是一项兼容层，不能替代正式 SDK 契约和跨适配器验证。
 
 目标群 Planner 的 `reply` 工具只能按当前 Maisaka 历史中的消息 ID 查找真实
 `original_message`。旧版插件通过 `maisaka.context.append` 写入的展开内容
@@ -189,9 +190,10 @@ metadata 中移除 source 消息 ID。Planner 仅被允许选择目标群上下�
 从当前真实历史中定位刚发送的合并转发；无法可靠定位时必须保持沉默。
 
 插件 `0.1.18` 起请求 `send.forward(return_details=True)`，取得目标消息 ID
-时将它与 target 的已发送阶段一并持久化，并作为主动任务唯一的回复锚点。
-完整能力依赖配套 Host 分支 `1.1.2-send-forward-result`；旧 Host 仍只返回
-布尔结果时继续使用上述保守定位规则。
+时将它与 target 的已发送阶段一并持久化，并作为主动任务唯一的回复锚点。针对
+MaiBot `dev@7a2bdc26a`，插件会通过 SDK 允许的原始 `cap.call` 调用保留 Host
+返回的详细结果，避免当前普通 SDK 代理将其压缩成布尔值；旧 Host 或没有该原始
+调用入口的 SDK 继续使用上述保守定位规则。
 
 插件 `0.1.19` 明确保留无目标 ID 的 fallback。无论 Host 返回旧布尔成功结果，
 还是返回 `sent=True` 但 `message_id=None` 的详细结果，插件都不会重新发送，
@@ -213,16 +215,17 @@ target 或声称已经与目标消息关联。
 
 #### 上游实施方向
 
-1. 直接为现有 `send.forward` 增加可选参数 `return_details`，默认值为
-   `False`；默认调用继续返回 `bool`，显式传入 `return_details=True` 时返回
-   至少包含 `sent` 和最终目标 `message_id` 的结构化结果。详细结果不使用
-   顶层 `success`，避免被现有 SDK 的布尔能力兼容逻辑压缩。
+1. 保持现有 `send.forward` 的可选参数 `return_details`，默认值为 `False`；默认
+   调用继续返回 `bool`，显式传入 `return_details=True` 时返回至少包含 `sent` 和
+   最终目标 `message_id` 的结构化结果。Host 当前已实现这一部分；SDK 仍应在
+   详细模式保留完整字典，或由 Host 避免给详细结果写入会触发布尔归一化的顶层
+   `success`，使调用方不再依赖原始 `cap.call` 兼容层。
 2. 详细结果必须在平台成功回执更新 `SessionMessage.message_id` 之后生成；
    平台没有返回最终 ID 时使用 `None`，不能返回发送前的 `send_api_*` 临时
    ID。
-3. 复用 SDK `SendCapability.forward(..., **kwargs)` 已有的参数透传能力和
-   “无顶层 `success` 的字典保持原样”语义，不新增 SDK 方法、不修改 SDK
-   结果归一化逻辑，也不得另建平行的转发 capability 名称。
+3. 复用 SDK `SendCapability.forward(..., **kwargs)` 已有的参数透传能力，并让
+   `return_details=True` 的结果绕过布尔成功能力的归一化；不新增 SDK 方法，
+   也不得另建平行的转发 capability 名称。
 4. 调用方取得 `message_id` 后可把它作为后续回复、关联记录或审计的稳定锚点；
    本插件按 target 持久化该 ID，重载恢复时不得退回 source ID。
 5. Host 提供按目标 session 和最终 `message_id` 关联扩展内容的安全接口，或在

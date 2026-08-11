@@ -6,6 +6,13 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- 对 MaiBot `dev` 已支持的 `send.forward(return_details=True)` 详细结果，使用
+  SDK 允许的原始 `cap.call` 通道保留最终目标 `message_id`，并继续按 target
+  持久化和作为既有目标 Planner 回复锚点；普通 SDK 代理或旧 Host 没有该 ID 时
+  仍保留不重发的安全 fallback。
+
 ## [0.2.11] - 2026-08-11
 
 ### Added
