@@ -250,7 +250,10 @@ class ForwardingRuntime:
         output_items: Any,
         authorization_round: str,
     ) -> Any:
-        """把最新 Planner 输出 Item 交给自动查看续接协调器。
+        """编排最新 Planner 输出 Item，并确认普通查看后的判断提醒。
+
+        协调器成功处理一次正常 Planner 响应后，会清除该 session 尚待消费的
+        主动查看判断提醒；若处理被异常中断，则保留提醒供下一次请求恢复。
 
         Args:
             session_id: 当前 Planner Hook 提供的真实聊天流 ID。
@@ -262,11 +265,13 @@ class ForwardingRuntime:
             已清洗或按路径 B 替换后的 Context Item 快照列表。
         """
 
-        return await self.view_before_forward.transform_after_output_items(
+        transformed = await self.view_before_forward.transform_after_output_items(
             session_id,
             output_items,
             authorization_round,
         )
+        self.acknowledge_view_judgment(session_id)
+        return transformed
 
     def authorize_forward_calls(self, session_id: str, tool_calls: Any) -> tuple[Any, str]:
         """清洗转发参数并绑定真实 ``after_response`` 会话。

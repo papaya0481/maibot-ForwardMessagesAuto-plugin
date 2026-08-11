@@ -175,6 +175,65 @@ async def test_latest_output_items_capture_manual_view_adds_existing_reminder(tm
 
 
 @pytest.mark.asyncio
+async def test_latest_output_items_normal_response_consumes_manual_view_reminder(tmp_path: Path) -> None:
+    """验证新版正常 Planner 响应会消费主动查看留下的判断提醒。
+
+    测试先从 Context Item 历史登记一次主动成功查看，再依次执行新版 EARLY
+    与 LATE ``after_response`` Hook。随后移除原 ToolResult 的普通历史不应
+    再追加提醒。该场景防止提醒在已经完成判断后跨普通轮次永久重复。
+
+    Args:
+        tmp_path: pytest 提供的临时数据目录，用于隔离状态文件和查看资格。
+    """
+
+    plugin = build_plugin(tmp_path)
+    await plugin.on_load()
+    view_history = [
+        build_output_item_call(
+            call_id="manual-view",
+            item_id="manual-view-item",
+            tool_name=VIEW_FORWARD_TOOL_NAME,
+            message_id="manual-message",
+        ),
+        build_output_item_result(
+            "manual-view",
+            "完整转发内容",
+            tool_name=VIEW_FORWARD_TOOL_NAME,
+        ),
+    ]
+    captured = await plugin.capture_view_forward_result(
+        session_id="source-stream",
+        items=view_history,
+        item_schema_version=1,
+        tool_definitions=[],
+    )
+    assert len(captured["modified_kwargs"]["items"]) == 3
+
+    normal_output = [build_output_item_assistant("已完成本轮分享判断")]
+    early = await plugin.authorize_forward_request_context(
+        session_id="source-stream",
+        output_items=normal_output,
+    )
+    await plugin.orchestrate_view_before_forward(**early["modified_kwargs"])
+
+    later_history = [
+        build_output_item_assistant(
+            "后续普通上下文",
+            item_id="later-assistant-item",
+            logical_turn_id="later-turn",
+        )
+    ]
+    later = await plugin.capture_view_forward_result(
+        session_id="source-stream",
+        items=deepcopy(later_history),
+        item_schema_version=1,
+        tool_definitions=[],
+    )
+    assert later["modified_kwargs"]["items"] == later_history
+    await plugin.on_unload()
+
+
+@pytest.mark.asyncio
 async def test_latest_output_items_keep_mixed_tool_order_and_clean_only_forward_args(tmp_path: Path) -> None:
     """验证最新混合工具输出只清洗转发参数而不重排其他调用。
 
