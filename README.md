@@ -23,7 +23,7 @@
 
 ## 安装要求
 
-- MaiBot `1.1.0` 或更高兼容版本
+- MaiBot `1.2.0` 或更高兼容版本
 - maibot-plugin-sdk `2.7.1` 或更高兼容版本
 
 插件只使用 MaiBot 通用 capabilities，

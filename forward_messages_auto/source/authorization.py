@@ -7,6 +7,11 @@ from copy import deepcopy
 from secrets import token_urlsafe
 from typing import Any
 
+from .output_items import (
+    extract_output_item_tool_calls,
+    replace_output_item_arguments,
+)
+
 FORWARD_TOOL_NAME = "request_cross_group_forward"
 FORWARD_CONTEXT_TOKEN_ARGUMENT = "_forward_context_token"
 FORWARD_AUTHORIZATION_ROUND_KWARG = "_forward_authorization_round"
@@ -82,6 +87,55 @@ class ForwardInvocationGate:
             function["arguments"] = sanitized_arguments
         return sanitized_calls, round_id
 
+    def sanitize_and_authorize_output_items(
+        self,
+        session_id: str,
+        output_items: Any,
+    ) -> tuple[Any, str]:
+        """清洗最新 Context Item 载荷并为转发调用签发一次性凭据。
+
+        Args:
+            session_id: ``maisaka.planner.after_response`` 提供的真实 Planner
+                会话 ID；为空时只清洗公开参数，不签发凭据。
+            output_items: 最新 Hook 契约中的 ``FunctionCallItem`` 快照列表。
+                非列表输入原样返回，结构异常的 Item 不会被强行重建。
+
+        Returns:
+            二元组包含清洗后的 ``output_items`` 深拷贝和本轮随机标记。每个
+            转发调用只保留公开参数，并在 session 与 ``msg_id`` 均有效时附加
+            内部一次性凭据。
+        """
+
+        round_id = token_urlsafe(32)
+        if not isinstance(output_items, list):
+            return output_items, round_id
+
+        normalized_session_id = str(session_id or "").strip()
+        sanitized_items = output_items
+        for call in extract_output_item_tool_calls(output_items):
+            if call.name != FORWARD_TOOL_NAME:
+                continue
+            stale_token = str(call.arguments.get(FORWARD_CONTEXT_TOKEN_ARGUMENT) or "").strip()
+            if stale_token:
+                self._authorizations.pop(stale_token, None)
+
+            sanitized_arguments = self._public_arguments(call.arguments)
+            message_id = str(sanitized_arguments.get("msg_id") or "").strip()
+            if message_id:
+                sanitized_arguments["msg_id"] = message_id
+            if normalized_session_id and message_id:
+                sanitized_arguments[FORWARD_CONTEXT_TOKEN_ARGUMENT] = self._issue(
+                    normalized_session_id,
+                    message_id,
+                    round_id,
+                )
+            sanitized_items = replace_output_item_arguments(
+                sanitized_items,
+                call.index,
+                sanitized_arguments,
+            )
+        return sanitized_items, round_id
+
     def sanitize_for_orchestration(
         self,
         session_id: str,
@@ -147,6 +201,61 @@ class ForwardInvocationGate:
                 self._authorizations.pop(token, None)
             function["arguments"] = sanitized_arguments
         return sanitized_calls
+
+    def sanitize_output_items_for_orchestration(
+        self,
+        session_id: str,
+        output_items: Any,
+        round_id: str,
+    ) -> Any:
+        """清洗 LATE Hook 的最新 Context Item 载荷并验证调用绑定。
+
+        Args:
+            session_id: LATE Hook 当前收到的 Planner 会话 ID。
+            output_items: 上游 Hook 已处理的 Context Item 快照列表。
+            round_id: EARLY Hook 在同一分发链生成的随机标记；为空或不匹配
+                时不会保留任何内部凭据。
+
+        Returns:
+            深拷贝后的 Context Item 列表。只有凭据精确绑定当前 round、session
+            和同一 ``msg_id`` 时才会保留；其他转发调用仍保留公开参数，最终
+            由正式 Tool handler 拒绝。
+        """
+
+        if not isinstance(output_items, list):
+            return output_items
+
+        normalized_session_id = str(session_id or "").strip()
+        normalized_round_id = str(round_id or "").strip()
+        sanitized_items = output_items
+        for call in extract_output_item_tool_calls(output_items):
+            if call.name != FORWARD_TOOL_NAME:
+                continue
+            sanitized_arguments = self._public_arguments(call.arguments)
+            message_id = str(sanitized_arguments.get("msg_id") or "").strip()
+            if message_id:
+                sanitized_arguments["msg_id"] = message_id
+
+            token = str(call.arguments.get(FORWARD_CONTEXT_TOKEN_ARGUMENT) or "").strip()
+            if (
+                normalized_round_id
+                and token
+                and self._authorizations.get(token)
+                == (
+                    normalized_session_id,
+                    message_id,
+                    normalized_round_id,
+                )
+            ):
+                sanitized_arguments[FORWARD_CONTEXT_TOKEN_ARGUMENT] = token
+            elif token:
+                self._authorizations.pop(token, None)
+            sanitized_items = replace_output_item_arguments(
+                sanitized_items,
+                call.index,
+                sanitized_arguments,
+            )
+        return sanitized_items
 
     def authorize_arguments(
         self,
@@ -241,6 +350,18 @@ class ForwardInvocationGate:
             if isinstance(arguments, dict):
                 self.revoke_arguments(arguments)
 
+    def revoke_output_items(self, output_items: Any) -> None:
+        """撤销最新 Context Item 载荷中所有未消费的转发凭据。
+
+        Args:
+            output_items: LATE Hook 当前收到的 Context Item 快照列表。该方法
+                只读取调用参数，不修改输入列表。
+        """
+
+        for call in extract_output_item_tool_calls(output_items):
+            if call.name == FORWARD_TOOL_NAME:
+                self.revoke_arguments(call.arguments)
+
     def clear(self) -> None:
         """清除全部尚未消费的一次性 Planner 会话凭据。"""
 
@@ -264,3 +385,17 @@ class ForwardInvocationGate:
         while len(self._authorizations) > MAX_PENDING_AUTHORIZATIONS:
             self._authorizations.popitem(last=False)
         return token
+
+    @staticmethod
+    def _public_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
+        """复制转发 Tool 的公开参数并删除所有内部字段。
+
+        Args:
+            arguments: 模型或历史载荷提供的原始参数字典。
+
+        Returns:
+            仅包含 ``msg_id``、``sharing_reason`` 和 ``content_summary`` 的
+            独立参数字典。
+        """
+
+        return {key: deepcopy(arguments[key]) for key in PUBLIC_FORWARD_ARGUMENTS if key in arguments}
