@@ -16,7 +16,9 @@ from .core.streams import GroupStreamRegistry
 from .request import ForwardRequestService
 from .source.authorization import ForwardInvocationGate
 from .source.history import PlannerHistoryParser
+from .source.models import ViewEligibilityStatus
 from .source.trigger import SourcePlannerTriggerService
+from .source.output_items import serialize_output_item_tool_calls
 from .source.view_flow import ViewBeforeForwardCoordinator
 from .source.view_state import ViewEligibilityStore
 from .target.delivery import ForwardDeliveryService
@@ -44,7 +46,7 @@ class ForwardingRuntime:
 
         self._config_provider = config_provider
         self.view_eligibility = ViewEligibilityStore()
-        self._pending_view_judgments: dict[str, set[str]] = {}
+        self._pending_view_judgments: dict[str, dict[str, bool]] = {}
         self.streams = GroupStreamRegistry(context)
         self.state = ForwardStateStore(
             context.paths.data_dir / "forward_state.json",
@@ -181,36 +183,48 @@ class ForwardingRuntime:
             )
         return self.source_trigger.observe(message)
 
-    def capture_view_results(self, session_id: str, messages: Any) -> list[str]:
+    def capture_view_results(self, session_id: str, history_items: Any) -> list[str]:
         """按 Planner 当前历史同步查看资格并登记新的成功结果。
 
-        每轮都用当前消息历史替换该聊天流的旧快照，因此被上下文裁剪的
-        查看结果立即失效。仍可见的成功结果持续合法且不按时间过期；失败
-        结果按可重试、空内容、可修正、终止和未知类型重新计算。每个成功
-        ``tool_call_id`` 只会首次登记为等待 Planner 立即判断的消息。
+        每轮都用当前消息或 Context Item 历史替换该聊天流的旧快照，因此被
+        上下文裁剪的查看结果立即失效。仍可见的成功结果持续合法且不按时间
+        过期；失败结果按可重试、空内容、可修正、终止和未知类型重新计算。
+        每个成功 ``tool_call_id`` 只会首次登记为等待 Planner 立即判断的消息。
 
         Args:
             session_id: source Planner 当前聊天流 ID。
-            messages: Planner 请求携带的 OpenAI 兼容消息历史。
+            history_items: Planner 请求携带的旧版 OpenAI 消息历史，或最新
+                ``before_request`` Hook 的 Context Item 快照列表。
 
         Returns:
             本次首次捕获成功的 ``msg_id`` 列表。调用方可据此判断是否需要
             向紧接着的 Planner 请求追加一次性续轮提醒。
         """
 
-        observations = PlannerHistoryParser.extract_view_observations(messages)
+        observations = PlannerHistoryParser.extract_view_observations(history_items)
         fresh_message_ids = self.view_eligibility.sync_context(
             session_id,
             observations,
         )
         auto_view_message_ids = self.view_before_forward.capture_context(
             session_id,
-            messages,
+            history_items,
             observations,
         )
         manual_message_ids = [message_id for message_id in fresh_message_ids if message_id not in auto_view_message_ids]
+        pending_judgments = self._pending_view_judgments.get(session_id)
+        if pending_judgments:
+            for message_id in pending_judgments:
+                lookup = self.view_eligibility.lookup(session_id, message_id)
+                if lookup.status is ViewEligibilityStatus.READY:
+                    pending_judgments[message_id] = lookup.content_complete
         if manual_message_ids:
-            self._pending_view_judgments.setdefault(session_id, set()).update(manual_message_ids)
+            pending_judgments = self._pending_view_judgments.setdefault(session_id, {})
+            for message_id in manual_message_ids:
+                pending_judgments[message_id] = self.view_eligibility.lookup(
+                    session_id,
+                    message_id,
+                ).content_complete
         return fresh_message_ids
 
     async def transform_after_response(
@@ -242,6 +256,35 @@ class ForwardingRuntime:
         self.acknowledge_view_judgment(session_id)
         return transformed
 
+    async def transform_after_output_items(
+        self,
+        session_id: str,
+        output_items: Any,
+        authorization_round: str,
+    ) -> Any:
+        """编排最新 Planner 输出 Item，并确认普通查看后的判断提醒。
+
+        协调器成功处理一次正常 Planner 响应后，会清除该 session 尚待消费的
+        主动查看判断提醒；若处理被异常中断，则保留提醒供下一次请求恢复。
+
+        Args:
+            session_id: 当前 Planner Hook 提供的真实聊天流 ID。
+            output_items: ``maisaka.planner.after_response`` 提供的 Context Item
+                快照列表。
+            authorization_round: EARLY Hook 生成的当前分发链随机标记。
+
+        Returns:
+            已清洗或按路径 B 替换后的 Context Item 快照列表。
+        """
+
+        transformed = await self.view_before_forward.transform_after_output_items(
+            session_id,
+            output_items,
+            authorization_round,
+        )
+        self.acknowledge_view_judgment(session_id)
+        return transformed
+
     def authorize_forward_calls(self, session_id: str, tool_calls: Any) -> tuple[Any, str]:
         """清洗转发参数并绑定真实 ``after_response`` 会话。
 
@@ -267,6 +310,28 @@ class ForwardingRuntime:
         self.debug_stats.record_requested_calls(session_id, sanitized_calls)
         return sanitized_calls, authorization_round
 
+    def authorize_forward_output_items(self, session_id: str, output_items: Any) -> tuple[Any, str]:
+        """清洗最新 Planner 输出 Item 并绑定真实会话授权。
+
+        Args:
+            session_id: Host Hook 提供的真实 Planner 会话 ID。
+            output_items: Host 序列化的 ``FunctionCallItem`` 快照列表。
+
+        Returns:
+            二元组包含清洗后的 Context Item 快照和当前 Hook 分发链随机标记。
+            调试统计使用旧版调用字典作为内部兼容投影，但不会改变返回协议。
+        """
+
+        sanitized_items, authorization_round = self.invocation_gate.sanitize_and_authorize_output_items(
+            session_id,
+            output_items,
+        )
+        self.debug_stats.record_requested_calls(
+            session_id,
+            serialize_output_item_tool_calls(sanitized_items),
+        )
+        return sanitized_items, authorization_round
+
     def cancel_pending_direct_forwards(self) -> None:
         """取消尚未发送的路径 B 续接请求。
 
@@ -278,10 +343,12 @@ class ForwardingRuntime:
         self.invocation_gate.clear()
 
     def build_view_judgment_reminder(self, session_id: str) -> str:
-        """构造成功查看后等待 Planner 消费的续轮判断提醒。
+        """按嵌套查看完整性构造等待 Planner 消费的续轮判断提醒。
 
         提醒在对应 Planner 请求成功返回前保持待处理，因此请求若被新消息
-        打断，下一次重试仍会收到相同提醒。方法只读取状态，不清除待处理项。
+        打断，下一次重试仍会收到相同提醒。已发现路径尚未全部查看时提供
+        可选继续查看说明，全部覆盖后才声明完整；方法只读取状态，不清除
+        待处理项。
 
         Args:
             session_id: 当前 source Planner 聊天流 ID。
@@ -290,13 +357,39 @@ class ForwardingRuntime:
             有待判断消息时返回一个 ``system-reminder`` 文本，否则返回空串。
         """
 
-        message_ids = sorted(self._pending_view_judgments.get(session_id, set()))
-        if not message_ids:
+        pending_judgments = self._pending_view_judgments.get(session_id, {})
+        if not pending_judgments:
             return ""
-        joined_message_ids = "、".join(message_ids)
+        complete_message_ids = "、".join(
+            sorted(message_id for message_id, is_complete in pending_judgments.items() if is_complete)
+        )
+        nested_message_ids = "、".join(
+            sorted(message_id for message_id, is_complete in pending_judgments.items() if not is_complete)
+        )
+        if complete_message_ids and nested_message_ids:
+            return (
+                "<system-reminder>\n"
+                f"刚刚已经成功查看合并转发消息 msg_id={complete_message_ids} 的完整内容；"
+                f"也已经查看合并转发消息 msg_id={nested_message_ids} 的当前层内容，但后者仍有尚未展开的嵌套转发消息。"
+                "对于仍有嵌套的消息，如果继续查看有助于判断，建议使用刚看到的内容中给出的 path 再次调用 "
+                "view_forward_message；你也可以直接依据当前已看到的内容，分别判断它们是否有意思、符合你的人设并值得"
+                "分享到其他群聊。值得时通过 tool_search 发现并调用 request_cross_group_forward，不值得时不要转发。"
+                "不要等待下一条聊天消息后再作判断。\n"
+                "</system-reminder>"
+            )
+        if nested_message_ids:
+            return (
+                "<system-reminder>\n"
+                f"刚刚已经查看合并转发消息 msg_id={nested_message_ids} 的当前层内容，但其中仍有尚未展开的嵌套转发消息。"
+                "如果继续查看有助于判断，建议使用刚看到的内容中给出的 path 再次调用 view_forward_message；"
+                "你也可以直接依据当前已看到的内容，判断它是否有意思、符合你的人设并值得分享到其他群聊。"
+                "值得时通过 tool_search 发现并调用 request_cross_group_forward，不值得时不要转发。"
+                "不要等待下一条聊天消息后再作判断。\n"
+                "</system-reminder>"
+            )
         return (
             "<system-reminder>\n"
-            f"刚刚已经成功查看合并转发消息 msg_id={joined_message_ids} 的完整内容。"
+            f"刚刚已经成功查看合并转发消息 msg_id={complete_message_ids} 的完整内容。"
             "请在本次续轮中优先依据刚看到的完整内容，判断它是否有意思、符合你的人设并值得分享到其他群聊；"
             "值得时通过 tool_search 发现并调用 request_cross_group_forward，不值得时不要转发。"
             "不要等待下一条聊天消息后再作判断。\n"

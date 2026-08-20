@@ -21,6 +21,7 @@ if __package__:
         FORWARD_AUTHORIZATION_ROUND_KWARG,
         FORWARD_TOOL_NAME,
     )
+    from .forward_messages_auto.source.output_items import append_user_reminder
 else:
     from forward_messages_auto import (
         CONFIG_VERSION,
@@ -33,6 +34,7 @@ else:
         FORWARD_AUTHORIZATION_ROUND_KWARG,
         FORWARD_TOOL_NAME,
     )
+    from forward_messages_auto.source.output_items import append_user_reminder
 
 
 class ForwardMessagesAutoPlugin(MaiBotPlugin):
@@ -248,11 +250,13 @@ class ForwardMessagesAutoPlugin(MaiBotPlugin):
 
         Args:
             **kwargs: ``maisaka.planner.before_request`` Hook 参数。使用
-                ``session_id`` 隔离状态，并读取及按需追加 ``messages``。
+                ``session_id`` 隔离状态，并读取及按需追加最新 ``items``；同时
+                兼容旧版 ``messages`` 载荷。
 
         Returns:
             阻塞 Hook 的继续结果。没有待判断消息时参数保持原样；成功查看
-            后会在 ``modified_kwargs.messages`` 末尾追加一次判断提醒。
+            后会在 ``modified_kwargs.items`` 或旧版 ``messages`` 末尾追加一次
+            判断提醒。
 
         Raises:
             RuntimeError: Hook 在 ``on_load`` 初始化运行时前被调用。
@@ -260,11 +264,14 @@ class ForwardMessagesAutoPlugin(MaiBotPlugin):
 
         session_id = str(kwargs.get("session_id") or "").strip()
         if session_id:
-            self.runtime.capture_view_results(session_id, kwargs.get("messages"))
+            history_items = kwargs.get("items") if "items" in kwargs else kwargs.get("messages")
+            self.runtime.capture_view_results(session_id, history_items)
             reminder = self.runtime.build_view_judgment_reminder(session_id)
-            messages = kwargs.get("messages")
-            if reminder and isinstance(messages, list):
-                messages.append({"role": "user", "content": reminder})
+            if reminder:
+                if "items" in kwargs and isinstance(kwargs.get("items"), list):
+                    kwargs["items"] = append_user_reminder(kwargs["items"], reminder)
+                elif isinstance(kwargs.get("messages"), list):
+                    kwargs["messages"].append({"role": "user", "content": reminder})
         return {"action": "continue", "modified_kwargs": kwargs}
 
     @HookHandler(
@@ -289,24 +296,32 @@ class ForwardMessagesAutoPlugin(MaiBotPlugin):
 
         Args:
             **kwargs: ``maisaka.planner.after_response`` Hook 参数。读取真实
-                ``session_id`` 和序列化 ``tool_calls``，保留其他响应字段并
-                写入只供同一 Hook 链 LATE 阶段使用的本轮随机标记。
+                ``session_id`` 和最新 ``output_items``；同时兼容旧版序列化
+                ``tool_calls``，并写入只供同一 Hook 链 LATE 阶段使用的本轮
+                随机标记。
 
         Returns:
-            阻塞 Hook 的继续结果，其中转发调用只保留公开参数并附带内部
-            一次性凭据，同时包含本轮随机标记；其他工具调用与响应字段
-            保持不变。
+            阻塞 Hook 的继续结果，其中最新 ``output_items`` 或旧版转发调用
+            只保留公开参数并附带内部一次性凭据，同时包含本轮随机标记；其他
+            工具调用与响应字段保持不变。
 
         Raises:
             RuntimeError: Hook 在 ``on_load`` 初始化运行时前被调用。
         """
 
         session_id = str(kwargs.get("session_id") or "").strip()
-        tool_calls, authorization_round = self.runtime.authorize_forward_calls(
-            session_id,
-            kwargs.get("tool_calls"),
-        )
-        kwargs["tool_calls"] = tool_calls
+        if "output_items" in kwargs:
+            output_items, authorization_round = self.runtime.authorize_forward_output_items(
+                session_id,
+                kwargs.get("output_items"),
+            )
+            kwargs["output_items"] = output_items
+        else:
+            tool_calls, authorization_round = self.runtime.authorize_forward_calls(
+                session_id,
+                kwargs.get("tool_calls"),
+            )
+            kwargs["tool_calls"] = tool_calls
         kwargs[FORWARD_AUTHORIZATION_ROUND_KWARG] = authorization_round
         return {"action": "continue", "modified_kwargs": kwargs}
 
@@ -331,12 +346,13 @@ class ForwardMessagesAutoPlugin(MaiBotPlugin):
 
         Args:
             **kwargs: ``maisaka.planner.after_response`` Hook 参数。读取
-                ``session_id``、``response``、``tool_calls`` 和 EARLY 本轮
-                标记；消费标记后保留其他统计及选择字段。
+                ``session_id``、最新 ``output_items`` 或旧版 ``response``、
+                ``tool_calls``，以及 EARLY 本轮标记；消费标记后保留其他统计
+                及选择字段。
 
         Returns:
-            阻塞 Hook 的继续结果。未接管时响应保持原样；路径 B 会在
-            ``modified_kwargs`` 中写回唯一的查看或恢复转发调用。
+            阻塞 Hook 的继续结果。未接管时最新 Item 或旧版响应保持原样；路径
+            B 会在对应载荷中写回唯一的查看或恢复转发调用。
 
         Raises:
             RuntimeError: Hook 在 ``on_load`` 初始化运行时前被调用。
@@ -345,14 +361,21 @@ class ForwardMessagesAutoPlugin(MaiBotPlugin):
         session_id = str(kwargs.get("session_id") or "").strip()
         authorization_round = str(kwargs.pop(FORWARD_AUTHORIZATION_ROUND_KWARG, "") or "").strip()
         if session_id:
-            response, tool_calls = await self.runtime.transform_after_response(
-                session_id,
-                kwargs.get("response"),
-                kwargs.get("tool_calls"),
-                authorization_round,
-            )
-            kwargs["response"] = response
-            kwargs["tool_calls"] = tool_calls
+            if "output_items" in kwargs:
+                kwargs["output_items"] = await self.runtime.transform_after_output_items(
+                    session_id,
+                    kwargs.get("output_items"),
+                    authorization_round,
+                )
+            else:
+                response, tool_calls = await self.runtime.transform_after_response(
+                    session_id,
+                    kwargs.get("response"),
+                    kwargs.get("tool_calls"),
+                    authorization_round,
+                )
+                kwargs["response"] = response
+                kwargs["tool_calls"] = tool_calls
         return {"action": "continue", "modified_kwargs": kwargs}
 
     @Tool(

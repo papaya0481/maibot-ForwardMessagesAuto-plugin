@@ -210,6 +210,103 @@ async def test_send_result_without_message_id_keeps_safe_reply_fallback(
 
 
 @pytest.mark.asyncio
+async def test_raw_capability_call_preserves_host_returned_target_message_id(tmp_path: Path) -> None:
+    """验证 SDK 布尔代理不会吞掉 Host 返回的最终目标消息 ID。
+
+    替身把普通 ``ctx.send.forward`` 模拟为会丢失详情的当前 SDK 代理，并让
+    ``call_host_method("cap.call")`` 返回 MaiBot dev 的原始详细发送结果。期望
+    插件仅使用原始调用，持久化 Host 给出的最终 ID，并把它作为既有目标 Planner
+    回复锚点。该测试防止以后改回普通 SDK 代理后把 ``message_id`` 静默压缩成
+    ``True``。
+
+    Args:
+        tmp_path: pytest 提供的隔离状态目录，用于检查持久化目标消息 ID。
+    """
+
+    plugin = build_plugin(tmp_path, target_groups=["20001"])
+    raw_calls: list[dict[str, object]] = []
+
+    async def normalized_forward(
+        messages: list[dict[str, object]],
+        stream_id: str,
+        **kwargs: object,
+    ) -> bool:
+        """在测试中阻止误用会压缩详细结果的普通 SDK 发送代理。
+
+        Args:
+            messages: 普通 SDK 代理本应接收的原始转发节点。
+            stream_id: 普通 SDK 代理本应接收的目标聊天流 ID。
+            **kwargs: 普通 SDK 代理本应接收的发送选项。
+
+        Raises:
+            AssertionError: 当投递服务没有使用原始 ``cap.call`` 通道时抛出。
+        """
+
+        del messages, stream_id, kwargs
+        raise AssertionError("详细发送结果不能经过会布尔归一化的 ctx.send.forward")
+
+    async def call_host_method(
+        method: str,
+        *,
+        payload: dict[str, object] | None = None,
+        **kwargs: object,
+    ) -> dict[str, object]:
+        """模拟保留 Host 原始详细结果的受限 ``cap.call`` 通道。
+
+        Args:
+            method: SDK 请求的原始 Host RPC 方法，必须为 ``"cap.call"``。
+            payload: 包含 capability 名称及其参数的 RPC 载荷。
+            **kwargs: 本测试中不应传入的额外 RPC 选项。
+
+        Returns:
+            具有 ``success``、``sent`` 与平台最终 ``message_id`` 的 Host
+            详细发送结果。
+        """
+
+        assert method == "cap.call"
+        assert kwargs == {}
+        assert isinstance(payload, dict)
+        assert payload["capability"] == "send.forward"
+        args = payload["args"]
+        assert isinstance(args, dict)
+        assert args["stream_id"] == "target-a"
+        assert args["return_details"] is True
+        assert args["sync_to_maisaka_history"] is True
+        raw_calls.append(payload)
+        plugin.ctx.events.append(("send", "target-a"))
+        return {
+            "success": True,
+            "sent": True,
+            "message_id": "host-final-target-id",
+        }
+
+    plugin.ctx.send.forward = normalized_forward
+    plugin.ctx.call_host_method = call_host_method
+    await plugin.on_load()
+    seed_successful_view(plugin)
+
+    result = await invoke_forward_tool(
+        plugin,
+        "forward-message",
+        platform="qq",
+        group_id="10001",
+        stream_id="source-stream",
+    )
+
+    assert result["success"] is True
+    assert len(raw_calls) == 1
+    assert plugin.ctx.events == [("send", "target-a"), ("planner", "target-a")]
+    assert plugin.ctx.maisaka.proactive.metadata_by_stream["target-a"] == {
+        "job_id": result["job_id"],
+        "target_message_id": "host-final-target-id",
+    }
+    state_payload = json.loads((tmp_path / "forward_state.json").read_text(encoding="utf-8"))
+    saved_job = next(iter(state_payload["jobs"].values()))
+    assert saved_job["target_message_ids"] == {"20001": "host-final-target-id"}
+    await plugin.on_unload()
+
+
+@pytest.mark.asyncio
 async def test_new_target_does_not_resend_completed_existing_target(tmp_path: Path) -> None:
     """验证路由新增 target 时永久防重状态只允许发送新目标。
 

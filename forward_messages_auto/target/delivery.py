@@ -286,15 +286,7 @@ class ForwardDeliveryService:
             ``None``。
         """
 
-        result = await self._ctx.send.forward(
-            job.forward_messages,
-            target_stream_id,
-            processed_plain_text="[跨群分享的合并转发消息]",
-            storage_message=True,
-            sync_to_maisaka_history=True,
-            maisaka_source_kind=f"cross_group_forward:{job.job_id}",
-            return_details=True,
-        )
+        result = await self._call_forward_with_details(job, target_stream_id)
         if not CapabilityResult.succeeded(result):
             error = CapabilityResult.error(result)
             self._ctx.logger.warning(
@@ -314,6 +306,57 @@ class ForwardDeliveryService:
             )
         await self._state.record_target_sent(job, target_group_id, target_message_id)
         return None, target_message_id
+
+    async def _call_forward_with_details(
+        self,
+        job: ForwardJob,
+        target_stream_id: str,
+    ) -> Any:
+        """调用 ``send.forward`` 并尽可能保留 Host 返回的详细发送结果。
+
+        当前 MaiBot Host 在 ``return_details=True`` 时会返回 ``sent`` 和最终
+        ``message_id``，但部分 SDK 版本会因顶层 ``success`` 字段把该结果归一
+        化为布尔值。SDK 已允许插件通过受限的 ``cap.call`` 原始通道调用已声明
+        capability；此处优先使用该通道，以免在 SDK 归一化前丢失最终 ID。旧 SDK
+        未提供该方法时才使用普通 ``send.forward`` 代理。原始调用一旦抛出异常
+        不会再回退重发，避免投递状态未知时产生重复消息。
+
+        Args:
+            job: 提供原始转发节点、处理后纯文本和任务来源标识的转发任务快照。
+            target_stream_id: 已解析的目标 MaiBot 聊天流 ID。
+
+        Returns:
+            Host 未经 SDK 布尔归一化的详细结果，或旧 SDK 普通发送代理的兼容
+            返回值。
+        """
+
+        send_args = {
+            "messages": job.forward_messages,
+            "stream_id": target_stream_id,
+            "processed_plain_text": "[跨群分享的合并转发消息]",
+            "storage_message": True,
+            "sync_to_maisaka_history": True,
+            "maisaka_source_kind": f"cross_group_forward:{job.job_id}",
+            "return_details": True,
+        }
+        raw_host_call = getattr(self._ctx, "call_host_method", None)
+        if callable(raw_host_call):
+            return await raw_host_call(
+                "cap.call",
+                payload={
+                    "capability": "send.forward",
+                    "args": send_args,
+                },
+            )
+        return await self._ctx.send.forward(
+            job.forward_messages,
+            target_stream_id,
+            processed_plain_text="[跨群分享的合并转发消息]",
+            storage_message=True,
+            sync_to_maisaka_history=True,
+            maisaka_source_kind=f"cross_group_forward:{job.job_id}",
+            return_details=True,
+        )
 
     async def _trigger_planner(
         self,
