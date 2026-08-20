@@ -6,12 +6,24 @@
 
 ## [Unreleased]
 
+## [0.2.12] - 2026-08-20
+
+### Changed
+
+- 重新整理转发能力 TODO，明确目标消息 ID、嵌套查看、原生引用节点、目标
+  Planner 上下文和 QQ XML 聊天记录卡片的当前实现边界、上游依赖与验收条件。
+- 将已由当前兼容路径覆盖的目标投递/回复锚点和嵌套逐层查看标记为低优先级正式
+  契约完善，保留无可靠 ID 时不重发、目标 Planner 保持沉默等安全边界。
+- 将 Manifest 与用户文档中的最低 MaiBot 版本从 `1.1.0` 修正为 `1.2.0`，与当前
+  上游支持范围保持一致。
+- 本版本没有修改配置结构、字段、默认值或语义，配置版本继续保持 `0.2.10`。
+
 ### Fixed
 
-- 对 MaiBot `dev` 已支持的 `send.forward(return_details=True)` 详细结果，使用
-  SDK 允许的原始 `cap.call` 通道保留最终目标 `message_id`，并继续按 target
-  持久化和作为既有目标 Planner 回复锚点；普通 SDK 代理或旧 Host 没有该 ID 时
-  仍保留不重发的安全 fallback。
+- 修复嵌套合并转发查看状态判断：只有根节点和已发现的全部嵌套路径都成功查看
+  后才标记内容完整，避免把仍需继续查看的结果误认为完整内容。
+- 对 `send.forward(return_details=True)` 的原始 Host 结果保留最终目标消息 ID，
+  并继续使用无 ID 时不重发的安全 fallback。
 
 ## [0.2.11] - 2026-08-11
 
@@ -441,7 +453,8 @@
 - 新增分阶段持久化状态与幂等恢复，避免后续步骤失败时重复发送。
 - 新增测试，覆盖缓存、白名单、消息节点、顺序投递、失败隔离和去重。
 
-[Unreleased]: https://github.com/papaya0481/maibot-ForwardMessagesAuto-plugin/compare/v0.2.11...HEAD
+[Unreleased]: https://github.com/papaya0481/maibot-ForwardMessagesAuto-plugin/compare/v0.2.12...HEAD
+[0.2.12]: https://github.com/papaya0481/maibot-ForwardMessagesAuto-plugin/compare/v0.2.11...v0.2.12
 [0.2.11]: https://github.com/papaya0481/maibot-ForwardMessagesAuto-plugin/compare/v0.2.10...v0.2.11
 [0.2.10]: https://github.com/papaya0481/maibot-ForwardMessagesAuto-plugin/compare/v0.2.9...v0.2.10
 [0.2.5]: https://github.com/papaya0481/maibot-ForwardMessagesAuto-plugin/compare/v0.2.4...v0.2.5
